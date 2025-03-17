@@ -1,3 +1,4 @@
+///home/phiuser/phi/transporte-app/pages/_app.js
 import '../styles/globals.css';
 import Layout from '../components/Layout';
 import { Toaster } from 'react-hot-toast';

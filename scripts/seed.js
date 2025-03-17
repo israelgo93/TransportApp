@@ -1,3 +1,4 @@
+///home/phiuser/phi/transporte-app/scripts/seed.js
 /**
  * Script para crear datos de prueba en la base de datos de Supabase
  * 

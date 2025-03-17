@@ -1,3 +1,4 @@
+// pages/reservaciones.js
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
@@ -9,20 +10,35 @@ export default function Reservaciones() {
   const [loading, setLoading] = useState(true);
   const [reservaciones, setReservaciones] = useState([]);
   const [user, setUser] = useState(null);
+  const [error, setError] = useState(null);
 
   // Verificar autenticación
   useEffect(() => {
     const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        toast.error('Debes iniciar sesión para ver tus reservaciones');
-        router.push('/login?redirect=/reservaciones');
-        return;
+      try {
+        console.log('Verificando autenticación...');
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+        
+        if (sessionError) {
+          throw sessionError;
+        }
+        
+        if (!session) {
+          console.log('No hay sesión activa, redirigiendo a login');
+          toast.error('Debes iniciar sesión para ver tus reservaciones');
+          router.push('/login?redirect=/reservaciones');
+          return;
+        }
+        
+        console.log(`Usuario autenticado: ${session.user.id}`);
+        setUser(session.user);
+        await fetchReservaciones(session.user.id);
+      } catch (error) {
+        console.error('Error de autenticación:', error);
+        setError('Error al verificar la sesión');
+        toast.error('Error al verificar la sesión');
+        router.push('/login');
       }
-      
-      setUser(session.user);
-      fetchReservaciones(session.user.id);
     };
 
     checkAuth();
@@ -31,6 +47,8 @@ export default function Reservaciones() {
   // Cargar reservaciones del usuario
   const fetchReservaciones = async (userId) => {
     try {
+      console.log(`Cargando reservaciones para usuario: ${userId}`);
+      
       const { data, error } = await supabase
         .from('reservaciones')
         .select(`
@@ -39,6 +57,7 @@ export default function Reservaciones() {
           estado,
           reference_code,
           created_at,
+          usuario_id,
           horarios:horario_id (
             id,
             hora_salida,
@@ -71,11 +90,23 @@ export default function Reservaciones() {
         .eq('usuario_id', userId)
         .order('created_at', { ascending: false });
 
-      if (error) throw error;
+      if (error) {
+        console.error('Error al cargar reservaciones:', error);
+        throw error;
+      }
       
-      setReservaciones(data || []);
+      console.log(`${data?.length || 0} reservaciones encontradas`);
+      
+      // Verificación adicional de seguridad
+      const filteredData = data.filter(res => res.usuario_id === userId);
+      if (filteredData.length !== data.length) {
+        console.warn('¡Alerta! Se filtraron reservaciones que no pertenecen al usuario');
+      }
+      
+      setReservaciones(filteredData || []);
     } catch (error) {
       console.error('Error al cargar reservaciones:', error);
+      setError('Error al cargar tus reservaciones');
       toast.error('Error al cargar tus reservaciones');
     } finally {
       setLoading(false);
@@ -123,6 +154,21 @@ export default function Reservaciones() {
     );
   }
 
+  if (error) {
+    return (
+      <div className="max-w-4xl mx-auto">
+        <div className="bg-red-100 p-4 rounded-lg text-red-700 mb-4">
+          <p>{error}</p>
+        </div>
+        <div className="flex justify-center">
+          <Link href="/" className="text-primary hover:underline">
+            Volver al inicio
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-4xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">Mis Reservaciones</h1>
@@ -151,13 +197,23 @@ export default function Reservaciones() {
               day: 'numeric'
             });
             
-            const horaSalida = reserva.horarios?.hora_salida.substring(0, 5);
+            const horaSalida = reserva.horarios?.hora_salida?.substring(0, 5) || '';
+            
+            // Manejo seguro de pagos - verificar que pagos existe y tiene al menos un elemento
+            const hasPagos = reserva.pagos && reserva.pagos.length > 0;
+            const pago = hasPagos ? reserva.pagos[0] : null;
+            const montoTotal = pago?.monto || 0;
+            
+            // Calcular el precio total basado en el precio del horario y el número de asientos
+            // como alternativa al monto del pago (por si no hay pagos registrados)
+            const precioUnitario = reserva.horarios?.precio || 0;
+            const precioCalculado = precioUnitario * numAsientos;
             
             return (
               <div key={reserva.id} className="bg-white rounded-lg shadow-md overflow-hidden">
                 <div className="p-4 bg-gray-50 border-b flex justify-between items-center">
                   <h3 className="font-semibold">
-                    {reserva.horarios?.rutas?.origen} → {reserva.horarios?.rutas?.destino}
+                    {reserva.horarios?.rutas?.origen || 'Origen'} → {reserva.horarios?.rutas?.destino || 'Destino'}
                   </h3>
                   {getEstadoDisplay(reserva.estado)}
                 </div>
@@ -170,11 +226,11 @@ export default function Reservaciones() {
                     </div>
                     <div>
                       <p className="text-sm text-gray-600">Bus:</p>
-                      <p>{reserva.horarios?.buses?.numero} - {reserva.horarios?.buses?.tipo}</p>
+                      <p>{reserva.horarios?.buses?.numero || 'N/A'} - {reserva.horarios?.buses?.tipo || 'N/A'}</p>
                     </div>
                     <div>
                       <p className="text-sm text-gray-600">Asientos ({numAsientos}):</p>
-                      <p>{asientosNums}</p>
+                      <p>{asientosNums || 'N/A'}</p>
                     </div>
                     <div>
                       <p className="text-sm text-gray-600">Referencia:</p>
@@ -186,7 +242,7 @@ export default function Reservaciones() {
                     <div className="mb-3 sm:mb-0">
                       <p className="text-sm text-gray-600">Total:</p>
                       <p className="font-bold text-lg text-primary">
-                        ${reserva.pagos[0]?.monto.toFixed(2)}
+                        ${hasPagos && montoTotal ? montoTotal.toFixed(2) : precioCalculado.toFixed(2)}
                       </p>
                     </div>
                     

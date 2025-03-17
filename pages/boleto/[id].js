@@ -1,3 +1,4 @@
+///home/phiuser/phi/transporte-app/pages/boleto/[id].js
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
