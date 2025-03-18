@@ -12,7 +12,7 @@ export default function Reservaciones() {
   const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
 
-  // Verificar autenticación
+  // Verificar autenticación - Modificado para prevenir llamadas múltiples
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -32,7 +32,9 @@ export default function Reservaciones() {
         
         console.log(`Usuario autenticado: ${session.user.id}`);
         setUser(session.user);
-        await fetchReservaciones(session.user.id);
+        // Llamar a fetchReservaciones directamente aquí
+        // en lugar de usar otro useEffect que dependa de user
+        fetchReservaciones(session.user.id);
       } catch (error) {
         console.error('Error de autenticación:', error);
         setError('Error al verificar la sesión');
@@ -42,6 +44,9 @@ export default function Reservaciones() {
     };
 
     checkAuth();
+    
+    // No agregar user al arreglo de dependencias para evitar
+    // que se ejecute múltiples veces
   }, [router]);
 
   // Cargar reservaciones del usuario

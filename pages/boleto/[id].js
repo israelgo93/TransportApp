@@ -18,9 +18,10 @@ export default function Boleto() {
 
   // Verificar autenticación y cargar datos
   useEffect(() => {
-    const fetchData = async () => {
-      if (!id) return;
+    // Solo ejecutar si id está disponible
+    if (!id) return;
 
+    const fetchData = async () => {
       try {
         console.log(`Iniciando carga de datos para boleto de reservación: ${id}`);
         
@@ -260,6 +261,11 @@ export default function Boleto() {
   const horarioBus = reservacion.horarios?.buses || {};
   const asientos = reservacion.detalles_reservacion || [];
   
+  // Construir una URL válida para el QR que lleve a la página de detalles de reserva
+  const qrUrl = typeof window !== 'undefined' 
+    ? `${window.location.origin}/reserva/${reservacion.id}` 
+    : `/reserva/${reservacion.id}`;
+  
   return (
     <div className="max-w-4xl mx-auto">
       <div className="mb-6 flex justify-between items-center">
@@ -350,12 +356,13 @@ export default function Boleto() {
         <div className="flex justify-center">
           <div className="text-center">
             <QRCode 
-              value={`http://wtest.epam.gob.ec/verificar/${reservacion.reference_code}`} 
+              value={qrUrl}
               size={128}
               renderAs="svg"
               includeMargin={true}
             />
             <p className="text-sm text-gray-600 mt-2">Código de verificación</p>
+            <p className="text-xs text-gray-500">{reservacion.reference_code}</p>
           </div>
         </div>
         
