@@ -50,7 +50,14 @@ export default function Perfil() {
       setValue('apellido', data.apellido || '');
       setValue('cedula', data.cedula || '');
       setValue('telefono', data.telefono || '');
-      setValue('email', user?.email || '');
+      
+      // IMPORTANTE: Establecer el email del usuario directamente desde session.user
+      if (user && user.email) {
+        setValue('email', user.email);
+        console.log("Email establecido:", user.email);
+      } else {
+        console.warn("No se pudo obtener el email del usuario");
+      }
     } catch (error) {
       console.error('Error al cargar perfil:', error);
       toast.error('Error al cargar datos del perfil');
@@ -174,6 +181,7 @@ export default function Perfil() {
                     message: 'Correo electrónico inválido'
                   }
                 })}
+                defaultValue={user?.email || ''} // Aseguramos que se muestre el email
                 className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-primary"
               />
               {errors.email && (

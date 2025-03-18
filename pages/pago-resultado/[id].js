@@ -108,6 +108,30 @@ export default function PagoResultado() {
                   message: 'La transacción ha sido aprobada exitosamente' 
                 } 
               });
+              
+              // Si la reservación está en pendiente pero el pago aprobado, corregir el estado
+              // Esta es una validación puntual, no una verificación continua
+              if (reservacionData.estado === 'Pendiente') {
+                try {
+                  const { error: updateError } = await supabase
+                    .from('reservaciones')
+                    .update({ 
+                      estado: 'Confirmada',
+                      updated_at: new Date().toISOString()
+                    })
+                    .eq('id', id);
+                    
+                  if (!updateError && isMounted) {
+                    setReservacion({
+                      ...reservacionData,
+                      estado: 'Confirmada'
+                    });
+                  }
+                } catch (e) {
+                  console.error('Error al actualizar estado de reservación:', e);
+                }
+              }
+              
               setLoading(false);
             }
             return;
@@ -146,13 +170,15 @@ export default function PagoResultado() {
         
         // 3. Desde el objeto de datos del pago
         if (!requestId && pagoData && pagoData.datos_pago && pagoData.datos_pago.requestId) {
-          requestId = pagoData.datos_pago.requestId;
+          requestId = String(pagoData.datos_pago.requestId);
           console.log(`RequestId de datos_pago: ${requestId}`);
         }
         
-        // Verificar el estado del pago
-        if (isMounted) {
+        // Verificar el estado del pago una sola vez durante la carga inicial
+        if (isMounted && requestId) {
           await verificarPago(requestId);
+        } else {
+          setLoading(false);
         }
       } catch (error) {
         console.error('Error al cargar datos:', error);
@@ -422,48 +448,8 @@ export default function PagoResultado() {
     }
   };
 
-  // useEffect adicional para verificar inconsistencias entre el pago y la reservación
-  useEffect(() => {
-    // Solo ejecutar si tenemos datos cargados y no estamos ya verificando o cargando
-    if (loading || verificandoPago || !pago || !reservacion) return;
-    
-    let isMounted = true;
-    
-    // Si estamos en la página de resultado y hay un pago con estado "Aprobado", pero la reservación
-    // sigue en "Pendiente", intentamos forzar una actualización
-    const actualizarEstadoReservacion = async () => {
-      if (pago.estado === 'Aprobado' && reservacion.estado === 'Pendiente') {
-        console.log('Detectada inconsistencia: Pago aprobado pero reservación pendiente. Forzando actualización...');
-        
-        try {
-          const { data, error } = await supabase
-            .from('reservaciones')
-            .update({ 
-              estado: 'Confirmada',
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', reservacion.id)
-            .select()
-            .maybeSingle();
-              
-          if (error) {
-            console.error('Error al actualizar reservación:', error);
-          } else if (data && isMounted) {
-            console.log('Reservación actualizada correctamente');
-            setReservacion(data);
-          }
-        } catch (e) {
-          console.error('Error al forzar actualización de reservación:', e);
-        }
-      }
-    };
-    
-    actualizarEstadoReservacion();
-    
-    return () => {
-      isMounted = false;
-    };
-  }, [pago, reservacion, loading, verificandoPago]);
+  // ELIMINADO: useEffect adicional que verificaba inconsistencias causando recargas
+  // Ahora hacemos esta verificación una sola vez durante la carga inicial
 
   if (loading) {
     return (
