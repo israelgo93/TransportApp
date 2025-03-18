@@ -1,4 +1,4 @@
-///home/phiuser/phi/transporte-app/pages/boleto/[id].js
+// pages/boleto/[id].js
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
@@ -13,6 +13,7 @@ export default function Boleto() {
   
   const [loading, setLoading] = useState(true);
   const [reservacion, setReservacion] = useState(null);
+  const [perfilUsuario, setPerfilUsuario] = useState(null);
   const [user, setUser] = useState(null);
 
   // Verificar autenticación y cargar datos
@@ -21,6 +22,8 @@ export default function Boleto() {
       if (!id) return;
 
       try {
+        console.log(`Iniciando carga de datos para boleto de reservación: ${id}`);
+        
         // Obtener sesión del usuario
         const { data: { session } } = await supabase.auth.getSession();
         
@@ -31,9 +34,10 @@ export default function Boleto() {
         }
         
         setUser(session.user);
+        console.log(`Usuario autenticado: ${session.user.id}`);
 
-        // Cargar datos de la reservación
-        const { data, error } = await supabase
+        // Cargar datos de la reservación SIN hacer join con usuario_id
+        const { data: reservacionData, error: reservacionError } = await supabase
           .from('reservaciones')
           .select(`
             id,
@@ -41,6 +45,7 @@ export default function Boleto() {
             estado,
             reference_code,
             created_at,
+            usuario_id,
             horarios:horario_id (
               id,
               hora_salida,
@@ -69,32 +74,46 @@ export default function Boleto() {
                 numero,
                 tipo
               )
-            ),
-            profiles:usuario_id (
-              nombre,
-              apellido,
-              cedula
             )
           `)
           .eq('id', id)
           .single();
 
-        if (error) throw error;
+        if (reservacionError) {
+          console.error('Error al cargar reservación:', reservacionError);
+          throw reservacionError;
+        }
         
         // Verificar que la reservación pertenece al usuario y está confirmada
-        if (data.usuario_id !== session.user.id) {
+        if (reservacionData.usuario_id !== session.user.id) {
           toast.error('No tienes permiso para ver este boleto');
           router.push('/reservaciones');
           return;
         }
 
-        if (data.estado !== 'Confirmada') {
+        if (reservacionData.estado !== 'Confirmada') {
           toast.error('Este boleto no está confirmado. Completa el pago primero.');
           router.push(`/reserva/${id}`);
           return;
         }
         
-        setReservacion(data);
+        setReservacion(reservacionData);
+        console.log('Reservación cargada correctamente');
+
+        // Cargar perfil de usuario por separado
+        const { data: perfilData, error: perfilError } = await supabase
+          .from('profiles')
+          .select('nombre, apellido, cedula')
+          .eq('id', reservacionData.usuario_id)
+          .single();
+
+        if (perfilError) {
+          console.error('Error al cargar perfil:', perfilError);
+          // Continuamos aunque haya error en el perfil
+        } else {
+          setPerfilUsuario(perfilData);
+          console.log('Perfil de usuario cargado correctamente');
+        }
       } catch (error) {
         console.error('Error al cargar datos:', error);
         toast.error('Error al cargar información del boleto');
@@ -240,7 +259,6 @@ export default function Boleto() {
   const horarioRuta = reservacion.horarios?.rutas || {};
   const horarioBus = reservacion.horarios?.buses || {};
   const asientos = reservacion.detalles_reservacion || [];
-  const pasajero = reservacion.profiles || {};
   
   return (
     <div className="max-w-4xl mx-auto">
@@ -304,10 +322,10 @@ export default function Boleto() {
           <div>
             <h3 className="font-medium border-b pb-2 mb-2">Pasajero</h3>
             <p>
-              <span className="text-gray-600">Nombre:</span> {pasajero.nombre} {pasajero.apellido}
+              <span className="text-gray-600">Nombre:</span> {perfilUsuario?.nombre || 'No disponible'} {perfilUsuario?.apellido || ''}
             </p>
             <p>
-              <span className="text-gray-600">Cédula:</span> {pasajero.cedula}
+              <span className="text-gray-600">Cédula:</span> {perfilUsuario?.cedula || 'No disponible'}
             </p>
           </div>
         </div>
@@ -332,7 +350,7 @@ export default function Boleto() {
         <div className="flex justify-center">
           <div className="text-center">
             <QRCode 
-              value={`https://transportapp.ec/verificar/${reservacion.reference_code}`} 
+              value={`http://wtest.epam.gob.ec/verificar/${reservacion.reference_code}`} 
               size={128}
               renderAs="svg"
               includeMargin={true}

@@ -4,7 +4,6 @@ import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
-import axios from 'axios';
 
 export default function PagoResultado() {
   const router = useRouter();
@@ -20,7 +19,6 @@ export default function PagoResultado() {
   
   // useEffect para verificar autenticación y cargar datos
   useEffect(() => {
-    // Función fetchData mejorada para pages/pago-resultado/[id].js
     const fetchData = async () => {
       if (!id) return;
 
@@ -40,16 +38,23 @@ export default function PagoResultado() {
         setUser(session.user);
         console.log(`Usuario autenticado: ${session.user.id}`);
 
-        // Obtener datos de reservación
+        // Obtener datos de reservación con maybeSingle para evitar errores
         const { data: reservacionData, error: reservacionError } = await supabase
           .from('reservaciones')
           .select('*')
           .eq('id', id)
-          .single();
+          .maybeSingle();
 
-        if (reservacionError) {
+        if (reservacionError && reservacionError.code !== 'PGRST116') {
           console.error('Error obteniendo reservación:', reservacionError);
           throw reservacionError;
+        }
+        
+        if (!reservacionData) {
+          console.error(`Reservación no encontrada: ${id}`);
+          setError('Reservación no encontrada');
+          setLoading(false);
+          return;
         }
         
         console.log(`Reservación encontrada: ${reservacionData.reference_code}, estado: ${reservacionData.estado}`);
@@ -67,20 +72,46 @@ export default function PagoResultado() {
         
         setReservacion(reservacionData);
 
-        // Obtener datos del pago
+        // Obtener datos del pago con maybeSingle
         const { data: pagoData, error: pagoError } = await supabase
           .from('pagos')
           .select('*')
           .eq('reservacion_id', id)
-          .single();
+          .maybeSingle();
 
-        if (pagoError) {
+        if (pagoError && pagoError.code !== 'PGRST116') {
           console.error('Error obteniendo pago:', pagoError);
           throw pagoError;
         }
         
-        console.log(`Pago encontrado, id: ${pagoData.id}, estado: ${pagoData.estado}`);
-        setPago(pagoData);
+        if (pagoData) {
+          console.log(`Pago encontrado, id: ${pagoData.id}, estado: ${pagoData.estado}`);
+          setPago(pagoData);
+          
+          // Si el pago ya está en un estado final, no es necesario verificarlo
+          if (pagoData.estado === 'Aprobado') {
+            setPagoStatus({ 
+              status: { 
+                status: 'APPROVED', 
+                message: 'La transacción ha sido aprobada exitosamente' 
+              } 
+            });
+            setLoading(false);
+            return;
+          } else if (pagoData.estado === 'Rechazado') {
+            setPagoStatus({ 
+              status: { 
+                status: 'REJECTED', 
+                message: 'La transacción ha sido rechazada' 
+              } 
+            });
+            setLoading(false);
+            return;
+          }
+        } else {
+          console.log('No se encontró información de pago');
+          // En lugar de mostrar error, continuamos para crear un nuevo pago si es necesario
+        }
 
         // Intentar obtener el requestId de múltiples fuentes
         let requestId = null;
@@ -93,61 +124,19 @@ export default function PagoResultado() {
         }
         
         // 2. Desde el pago almacenado
-        if (!requestId && pagoData.place_to_pay_id) {
+        if (!requestId && pagoData && pagoData.place_to_pay_id) {
           requestId = pagoData.place_to_pay_id;
           console.log(`RequestId de BD: ${requestId}`);
         }
         
         // 3. Desde el objeto de datos del pago
-        if (!requestId && pagoData.datos_pago && pagoData.datos_pago.requestId) {
+        if (!requestId && pagoData && pagoData.datos_pago && pagoData.datos_pago.requestId) {
           requestId = pagoData.datos_pago.requestId;
           console.log(`RequestId de datos_pago: ${requestId}`);
         }
         
-        // 4. Si todavía no tenemos requestId, verificar si hay transacciones recientes para este comercio
-        if (!requestId) {
-          // Aquí podríamos hacer una consulta a un endpoint interno para obtener las transacciones recientes
-          console.log('No se encontró requestId en ninguna fuente');
-        }
-        
-        // Si encontramos un requestId, actualizar el pago si es necesario y verificar el estado
-        if (requestId) {
-          console.log(`Verificando estado de pago con requestId: ${requestId}`);
-          
-          // Si el pago no tiene requestId almacenado pero lo obtuvimos de otra fuente, actualizarlo
-          if (!pagoData.place_to_pay_id) {
-            console.log(`Actualizando place_to_pay_id a ${requestId} para el pago ${pagoData.id}`);
-            const { error: updateIdError } = await supabase
-              .from('pagos')
-              .update({ place_to_pay_id: requestId })
-              .eq('id', pagoData.id);
-              
-            if (updateIdError) {
-              console.error('Error actualizando place_to_pay_id:', updateIdError);
-            } else {
-              // Actualizar el objeto local
-              pagoData.place_to_pay_id = requestId;
-              setPago({...pagoData, place_to_pay_id: requestId});
-            }
-          }
-          
-          await verificarPago(requestId, true);
-        } else {
-          console.log('No hay ID de PlaceToPay para verificar');
-          setError('No hay información de pago disponible para verificar');
-          
-          // Incluso sin requestId, intentemos verificar si el pago ya está aprobado
-          if (pagoData.estado === 'Aprobado') {
-            setReservacion({...reservacionData, estado: 'Confirmada'});
-            setPago({...pagoData, estado: 'Aprobado'});
-            setPagoStatus({ 
-              status: { 
-                status: 'APPROVED', 
-                message: 'La transacción ha sido aprobada exitosamente' 
-              } 
-            });
-          }
-        }
+        // Verificar el estado del pago
+        await verificarPago(requestId);
       } catch (error) {
         console.error('Error al cargar datos:', error);
         setError(error.message || 'Error al cargar información del pago');
@@ -157,103 +146,260 @@ export default function PagoResultado() {
       }
     };
 
-    fetchData();
+    if (id) {
+      fetchData();
+    }
   }, [id, router]);
 
-  // Función verificarPago mejorada para pages/pago-resultado/[id].js
-  const verificarPago = async (requestId, isInitialCheck = false) => {
-    if (!requestId) {
-      console.error('No hay requestId para verificar');
-      setError('No hay información de pago disponible');
-      setPagoStatus({ status: { status: 'ERROR', message: 'No hay información de pago disponible' } });
-      return;
-    }
-
+  // Verificar pago con el API interno
+  const verificarPago = async (requestId) => {
     setVerificandoPago(true);
     setError(null);
     
     try {
-      console.log(`Enviando solicitud para verificar pago, requestId: ${requestId}`);
+      console.log(`Enviando solicitud para verificar pago, requestId: ${requestId || 'no proporcionado'}`);
       
-      // Usar el endpoint API para verificar el estado del pago
-      const response = await axios.post('/api/payment-status', {
-        requestId,
-        reservacionId: id
-      });
+      // Crear los datos para la solicitud
+      const requestData = {
+        reservacionId: id  // Usamos el ID de la reservación, no una referencia
+      };
       
-      console.log('Respuesta de verificación:', response.data);
-      
-      if (!response.data || !response.data.success) {
-        throw new Error(response.data?.message || 'Error en la verificación');
+      // Añadir requestId si existe
+      if (requestId) {
+        requestData.requestId = requestId;
       }
       
-      // Actualizar estados locales con la respuesta
-      setPagoStatus(response.data.paymentStatus);
-      setPago(response.data.pago);
-      setReservacion(response.data.reservacion);
-      
-      console.log(`Estado actualizado: ${response.data.paymentStatus.status.status}`);
-      
-      // Si es el primer chequeo y el estado sigue pendiente, intentar de nuevo después de un retraso
-      if (isInitialCheck && response.data.pago.estado === 'Pendiente') {
-        console.log('Programando verificación adicional en 3 segundos');
-        setTimeout(() => verificarPago(requestId), 3000);
+      // Verificar si estamos en desarrollo local
+      const isLocalDev = 
+        typeof window !== 'undefined' && 
+        (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+        
+      // En desarrollo local, usamos supabase directamente para actualizar el estado
+      if (isLocalDev) {
+        console.log('Detectado entorno de desarrollo local, verificando estado directamente en la BD');
+        await verificarPagoDirectamente(requestId);
+        setVerificandoPago(false);
+        return;
       }
       
-      // Si el pago está aprobado pero la aplicación muestra pendiente, forzar una actualización
-      if ((response.data.paymentStatus.status.status === 'APPROVED' || 
-          response.data.paymentStatus.status.status === 'APPROVED_PARTIAL') && 
-          response.data.pago.estado !== 'Aprobado') {
-        console.log('El pago está aprobado pero el estado no se actualizó correctamente. Forzando actualización...');
+      // En producción, llamamos al endpoint
+      try {
+        const response = await fetch('/api/payment-status', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestData)
+        });
         
-        // Actualizar manualmente el estado del pago en la base de datos
-        const { error: updateError } = await supabase
-          .from('pagos')
-          .update({
-            estado: 'Aprobado',
-            updated_at: new Date().toISOString()
-          })
-          .eq('id', response.data.pago.id);
-        
-        if (updateError) {
-          console.error('Error al actualizar pago manualmente:', updateError);
-        } else {
-          console.log('Pago actualizado manualmente a Aprobado');
-          // Actualizar la reservación también
-          const { error: reservaError } = await supabase
-            .from('reservaciones')
-            .update({
-              estado: 'Confirmada',
-              updated_at: new Date().toISOString()
-            })
-            .eq('id', id);
+        if (!response.ok) {
+          // Si la API no existe o hay otro error, intentar actualizar directamente
+          console.error(`Error en la respuesta (${response.status}): ${await response.text()}`);
           
-          if (reservaError) {
-            console.error('Error al actualizar reservación manualmente:', reservaError);
-          } else {
-            console.log('Reservación actualizada manualmente a Confirmada');
-            // Actualizar estados locales
-            setPago({...response.data.pago, estado: 'Aprobado'});
-            setReservacion({...response.data.reservacion, estado: 'Confirmada'});
+          if (response.status === 404) {
+            console.log('API payment-status no encontrada, actualizando directamente');
+            await verificarPagoDirectamente(requestId);
+            setVerificandoPago(false);
+            return;
+          }
+          
+          throw new Error(`Error verificando pago: ${response.status} ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        console.log('Respuesta de verificación:', data);
+        
+        if (!data.success) {
+          throw new Error(data.message || 'Error desconocido en verificación');
+        }
+        
+        // Actualizar estados locales
+        setPagoStatus(data.paymentStatus);
+        setPago(data.pago);
+        setReservacion(data.reservacion);
+        
+        // Si el estado cambió, recargar la página para reflejar el cambio
+        if (pago && data.pago && data.pago.estado !== pago.estado) {
+          console.log(`Estado de pago actualizado: ${pago.estado} -> ${data.pago.estado}`);
+          
+          // Solo recargar si el pago está aprobado o rechazado
+          if (data.pago.estado === 'Aprobado' || data.pago.estado === 'Rechazado') {
+            console.log('Recargando página para mostrar estado actualizado');
+            toast.success(`Pago ${data.pago.estado.toLowerCase()}`);
+            setTimeout(() => {
+              window.location.reload();
+            }, 2000);
+          }
+        }
+      } catch (apiError) {
+        console.error('Error al llamar API payment-status:', apiError);
+        // Si falla la llamada a la API, intentamos actualizar directamente
+        await verificarPagoDirectamente(requestId);
+      }
+    } catch (error) {
+      console.error('Error al verificar pago:', error);
+      setError(error.message || 'Error desconocido al verificar pago');
+      toast.error('Error al verificar el estado del pago');
+    } finally {
+      setVerificandoPago(false);
+    }
+  };
+  
+  // Verificación directa sin API (para desarrollo o como fallback)
+  const verificarPagoDirectamente = async (requestId) => {
+    try {
+      console.log('Verificando pago directamente en la base de datos');
+      
+      // Primero, asegurarnos de que tenemos el pago con el id correcto
+      if (!pago) {
+        console.log(`Buscando pago para reservación ${id}`);
+        const { data: pagoData, error: pagoError } = await supabase
+          .from('pagos')
+          .select('*')
+          .eq('reservacion_id', id)  // Usamos reservacion_id, no reference
+          .maybeSingle();
+          
+        if (!pagoError && pagoData) {
+          console.log(`Pago encontrado: ${pagoData.id}`);
+          setPago(pagoData);
+          // Continuamos con este pago
+          if (requestId && !pagoData.place_to_pay_id) {
+            console.log(`Actualizando place_to_pay_id a ${requestId}`);
+            const { error: updateIdError } = await supabase
+              .from('pagos')
+              .update({ place_to_pay_id: String(requestId) })
+              .eq('id', pagoData.id);
+              
+            if (updateIdError) {
+              console.error('Error actualizando place_to_pay_id:', updateIdError);
+            }
+          }
+          return;
+        }
+      }
+      
+      // Si ya tenemos el pago y hay requestId, actualizar place_to_pay_id si es necesario
+      if (pago && requestId && !pago.place_to_pay_id) {
+        console.log(`Actualizando place_to_pay_id a ${requestId}`);
+        const { error: updateIdError } = await supabase
+          .from('pagos')
+          .update({ place_to_pay_id: String(requestId) })
+          .eq('id', pago.id);
+          
+        if (updateIdError) {
+          console.error('Error actualizando place_to_pay_id:', updateIdError);
+        }
+      }
+      
+      // Verificar la transacción
+      if (requestId) {
+        // Aquí deberíamos consultar la API de PlaceToPay directamente,
+        // pero esto requeriría exponer credenciales de API al cliente, lo cual no es seguro.
+        // En su lugar, simplemente verificamos si hay datos en el pago
+        
+        if (pago && pago.datos_pago) {
+          console.log('Utilizando datos_pago existentes para determinar estado');
+          
+          // Determinar estado basado en datos_pago
+          if (pago.datos_pago.status && pago.datos_pago.status.status === 'APPROVED') {
+            // Si el pago está aprobado en PlaceToPay pero no en nuestra BD, actualizarlo
+            if (pago.estado !== 'Aprobado') {
+              console.log('Actualizando estado a Aprobado');
+              const { error: updateError } = await supabase
+                .from('pagos')
+                .update({ 
+                  estado: 'Aprobado',
+                  updated_at: new Date().toISOString()
+                })
+                .eq('id', pago.id);
+                
+              if (updateError) {
+                console.error('Error actualizando pago:', updateError);
+              } else {
+                // Actualizar también la reservación
+                const { error: reservaError } = await supabase
+                  .from('reservaciones')
+                  .update({ 
+                    estado: 'Confirmada',
+                    updated_at: new Date().toISOString()
+                  })
+                  .eq('id', id);
+                  
+                if (reservaError) {
+                  console.error('Error actualizando reservación:', reservaError);
+                }
+                
+                // Actualizar el estado local
+                setPago({...pago, estado: 'Aprobado'});
+                setReservacion({...reservacion, estado: 'Confirmada'});
+                setPagoStatus({
+                  status: {
+                    status: 'APPROVED',
+                    message: 'La transacción ha sido aprobada exitosamente'
+                  }
+                });
+                
+                toast.success('Pago aprobado');
+                setTimeout(() => {
+                  window.location.reload();
+                }, 2000);
+              }
+            }
           }
         }
       }
       
-    } catch (error) {
-      console.error('Error al verificar pago:', error);
-      setError(error.response?.data?.message || error.message || 'Error al verificar el estado del pago');
-      
-      // Incluso si hay error, verificamos si podemos usar datos locales
-      if (pago && pago.datos_pago && pago.datos_pago.status && pago.datos_pago.status.status === 'APPROVED') {
-        console.log('Usando datos de pago almacenados para mostrar estado aprobado');
-        setPagoStatus({ status: pago.datos_pago.status });
-        setPago({...pago, estado: 'Aprobado'});
-        setReservacion({...reservacion, estado: 'Confirmada'});
-      } else {
-        toast.error('Error al verificar el estado del pago');
+      // Refrescar el pago desde la BD
+      const { data: updatedPago, error: refreshError } = await supabase
+        .from('pagos')
+        .select('*')
+        .eq('id', pago.id)
+        .single();
+        
+      if (!refreshError && updatedPago) {
+        setPago(updatedPago);
+        
+        // Determinar estado para la UI
+        if (updatedPago.estado === 'Aprobado') {
+          setPagoStatus({
+            status: {
+              status: 'APPROVED',
+              message: 'La transacción ha sido aprobada exitosamente'
+            }
+          });
+          
+          // Verificar y actualizar reservación si es necesario
+          if (reservacion.estado !== 'Confirmada') {
+            const { data: updatedReservacion } = await supabase
+              .from('reservaciones')
+              .update({ estado: 'Confirmada' })
+              .eq('id', id)
+              .select()
+              .single();
+              
+            if (updatedReservacion) {
+              setReservacion(updatedReservacion);
+            }
+          }
+        } else if (updatedPago.estado === 'Rechazado') {
+          setPagoStatus({
+            status: {
+              status: 'REJECTED',
+              message: 'La transacción ha sido rechazada'
+            }
+          });
+        } else {
+          setPagoStatus({
+            status: {
+              status: 'PENDING',
+              message: 'La transacción está pendiente'
+            }
+          });
+        }
       }
-    } finally {
-      setVerificandoPago(false);
+    } catch (error) {
+      console.error('Error en verificación directa:', error);
+      throw error;
     }
   };
 
@@ -274,11 +420,11 @@ export default function PagoResultado() {
             })
             .eq('id', reservacion.id)
             .select()
-            .single();
+            .maybeSingle();
               
           if (error) {
             console.error('Error al actualizar reservación:', error);
-          } else {
+          } else if (data) {
             console.log('Reservación actualizada correctamente');
             setReservacion(data);
           }

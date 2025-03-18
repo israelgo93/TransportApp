@@ -203,20 +203,14 @@ export default function Pago() {
     fetchData();
   }, [id, router]);
 
-  // Iniciar el proceso de pago
-  // Función iniciarPago actualizada para pages/pago/[id].js
+  // Iniciar Pago: Función mejorada para el archivo pages/pago/[id].js
   const iniciarPago = async () => {
     if (!reservacion || !pago || !user) {
       toast.error('Información de reserva incompleta');
       return;
     }
 
-    // Verificar que tenemos el ID de reservación
-    console.log("ID de reservación:", id);
-    console.log("Datos de reservación:", reservacion);
-
     setProcesandoPago(true);
-    
     try {
       // Obtener datos del perfil del usuario
       const { data: perfilData, error: perfilError } = await supabase
@@ -227,9 +221,16 @@ export default function Pago() {
 
       if (perfilError) throw perfilError;
 
-      // Crear sesión de pago en Place to Pay a través de API route
+      // Si ya tenemos una URL de redirección, usarla (a menos que sea un reintento)
+      if (pago.url_redireccion && !router.query.retry) {
+        console.log(`Redirigiendo a URL de pago existente: ${pago.url_redireccion}`);
+        window.location.href = pago.url_redireccion;
+        return;
+      }
+
+      // Crear sesión de pago
       const returnUrl = `${window.location.origin}/pago-resultado/${reservacion.id}`;
-      const notificationUrl = `${window.location.origin}/api/notificacionPTP`; // URL del webhook corregida
+      const notificationUrl = `${window.location.origin}/api/notificacionPTP`;
       
       const paymentData = {
         reference: reservacion.reference_code,
@@ -246,98 +247,92 @@ export default function Pago() {
         expirationMinutes: 60
       };
 
-      // Usar la API route en lugar de llamar directamente a createPaymentSession
-      const apiUrl = `${window.location.origin}/api/place-to-pay`;
-      console.log('Enviando solicitud a API:', apiUrl);
-      console.log('Datos de pago:', JSON.stringify({
-        ...paymentData,
-        buyerEmail: '***@***' // Ocultamos el email por seguridad
-      }));
+      console.log('Enviando solicitud de pago con referencia:', reservacion.reference_code);
       
-      const response = await fetch(apiUrl, {
+      const response = await fetch(`${window.location.origin}/api/place-to-pay`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(paymentData)
       });
 
       if (!response.ok) {
         const errorText = await response.text();
-        console.error('Error en respuesta API:', errorText);
-        throw new Error(`Error al crear sesión de pago: ${response.status} ${response.statusText}`);
+        throw new Error(`Error al crear sesión de pago: ${errorText}`);
       }
 
       const data = await response.json();
       
       if (!data || data.status?.status !== 'OK') {
-        console.error('Respuesta inválida de PlaceToPay:', data);
-        throw new Error('Error al crear sesión de pago: respuesta inválida');
+        throw new Error('Error en respuesta de PlaceToPay: ' + JSON.stringify(data));
       }
 
-      console.log('Respuesta de PlaceToPay completa:', data);
-      console.log('Respuesta de PlaceToPay:', {
-        status: data.status?.status,
+      console.log('PlaceToPay respuesta:', {
         requestId: data.requestId,
-        processUrl: data.processUrl ? 'URL disponible' : 'URL no disponible'
+        processUrl: data.processUrl ? 'URL disponible' : 'No URL'
       });
 
-      // PUNTO CRÍTICO: Actualizar el registro de pago con la información de Place to Pay
-      // Asegurarnos de que el requestId se guarde correctamente
-      const requestId = data.requestId;
-      
-      if (!requestId) {
-        console.error('No se recibió requestId de PlaceToPay');
-        throw new Error('Error al crear sesión de pago: no se recibió requestId');
+      // ACTUALIZACIÓN CRÍTICA: Guardar el requestId y URL en la base de datos
+      if (!data.requestId) {
+        throw new Error('No se recibió requestId de PlaceToPay');
       }
-      
+
+      const requestId = data.requestId.toString();
       console.log(`Actualizando pago ${pago.id} con requestId: ${requestId}`);
       
+      // Primero, actualizar en Supabase
       const { error: updateError } = await supabase
         .from('pagos')
         .update({
           place_to_pay_id: requestId,
           url_redireccion: data.processUrl,
-          datos_pago: data
+          datos_pago: data,
+          updated_at: new Date().toISOString()
         })
         .eq('id', pago.id);
 
       if (updateError) {
-        console.error('Error al actualizar registro de pago:', updateError);
+        console.error('Error al actualizar pago en base de datos:', updateError);
         throw updateError;
       }
 
-      // Verificar que el pago se actualizó correctamente
-      const { data: pagoActualizado, error: verificacionError } = await supabase
+      // VERIFICACIÓN CRÍTICA: Confirmar que el requestId se guardó correctamente
+      const { data: updatedPago, error: verifyError } = await supabase
         .from('pagos')
-        .select('*')
+        .select('place_to_pay_id, url_redireccion')
         .eq('id', pago.id)
         .single();
-      
-      if (verificacionError) {
-        console.error('Error al verificar actualización del pago:', verificacionError);
+        
+      if (verifyError) {
+        console.error('Error al verificar actualización:', verifyError);
       } else {
-        console.log('Pago actualizado correctamente:', {
-          id: pagoActualizado.id,
-          place_to_pay_id: pagoActualizado.place_to_pay_id
-        });
+        console.log('Pago actualizado, place_to_pay_id:', updatedPago.place_to_pay_id);
+        if (updatedPago.place_to_pay_id !== requestId) {
+          console.error('¡ALERTA! El requestId no se guardó correctamente');
+          console.error('- Esperado:', requestId);
+          console.error('- Guardado:', updatedPago.place_to_pay_id);
+          
+          // Intento adicional de actualización
+          const { error: retryError } = await supabase
+            .from('pagos')
+            .update({ place_to_pay_id: requestId })
+            .eq('id', pago.id);
+            
+          if (retryError) {
+            console.error('Error en segundo intento de actualización:', retryError);
+          } else {
+            console.log('Segundo intento de actualización exitoso');
+          }
+        }
       }
 
-      // Redirigir a la página de PlaceToPay incluyendo el requestId en la URL de retorno
-      const processUrl = new URL(data.processUrl);
-      if (!processUrl.searchParams.has('requestId')) {
-        processUrl.searchParams.append('requestId', requestId);
-      }
-
-      console.log(`Redirigiendo a PlaceToPay: ${processUrl.toString()}`);
-      window.location.href = processUrl.toString();
+      // Redirigir a PlaceToPay
+      window.location.href = data.processUrl;
     } catch (error) {
-      console.error('Error al iniciar pago:', error);
-      toast.error('Error al procesar el pago. Inténtalo nuevamente.');
-    } finally {
+      console.error('Error al procesar pago:', error);
+      toast.error('Error al procesar el pago: ' + error.message);
       setProcesandoPago(false);
     }
-  };
+};
 
   if (loading) {
     return (
