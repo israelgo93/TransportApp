@@ -17,11 +17,14 @@ export default function PagoResultado() {
   const [pagoStatus, setPagoStatus] = useState(null);
   const [error, setError] = useState(null);
   
-  // useEffect para verificar autenticación y cargar datos
+  // useEffect para verificar autenticación y cargar datos - sin recarga automática
   useEffect(() => {
-    const fetchData = async () => {
-      if (!id) return;
+    // Solo ejecutar si id está disponible
+    if (!id) return;
+    
+    let isMounted = true;
 
+    const fetchData = async () => {
       try {
         console.log(`Iniciando carga de datos para reservación: ${id}`);
         
@@ -34,6 +37,8 @@ export default function PagoResultado() {
           router.push('/login');
           return;
         }
+        
+        if (!isMounted) return;
         
         setUser(session.user);
         console.log(`Usuario autenticado: ${session.user.id}`);
@@ -52,8 +57,10 @@ export default function PagoResultado() {
         
         if (!reservacionData) {
           console.error(`Reservación no encontrada: ${id}`);
-          setError('Reservación no encontrada');
-          setLoading(false);
+          if (isMounted) {
+            setError('Reservación no encontrada');
+            setLoading(false);
+          }
           return;
         }
         
@@ -70,7 +77,9 @@ export default function PagoResultado() {
           return;
         }
         
-        setReservacion(reservacionData);
+        if (isMounted) {
+          setReservacion(reservacionData);
+        }
 
         // Obtener datos del pago con maybeSingle
         const { data: pagoData, error: pagoError } = await supabase
@@ -86,26 +95,32 @@ export default function PagoResultado() {
         
         if (pagoData) {
           console.log(`Pago encontrado, id: ${pagoData.id}, estado: ${pagoData.estado}`);
-          setPago(pagoData);
+          if (isMounted) {
+            setPago(pagoData);
+          }
           
           // Si el pago ya está en un estado final, no es necesario verificarlo
           if (pagoData.estado === 'Aprobado') {
-            setPagoStatus({ 
-              status: { 
-                status: 'APPROVED', 
-                message: 'La transacción ha sido aprobada exitosamente' 
-              } 
-            });
-            setLoading(false);
+            if (isMounted) {
+              setPagoStatus({ 
+                status: { 
+                  status: 'APPROVED', 
+                  message: 'La transacción ha sido aprobada exitosamente' 
+                } 
+              });
+              setLoading(false);
+            }
             return;
           } else if (pagoData.estado === 'Rechazado') {
-            setPagoStatus({ 
-              status: { 
-                status: 'REJECTED', 
-                message: 'La transacción ha sido rechazada' 
-              } 
-            });
-            setLoading(false);
+            if (isMounted) {
+              setPagoStatus({ 
+                status: { 
+                  status: 'REJECTED', 
+                  message: 'La transacción ha sido rechazada' 
+                } 
+              });
+              setLoading(false);
+            }
             return;
           }
         } else {
@@ -136,22 +151,32 @@ export default function PagoResultado() {
         }
         
         // Verificar el estado del pago
-        await verificarPago(requestId);
+        if (isMounted) {
+          await verificarPago(requestId);
+        }
       } catch (error) {
         console.error('Error al cargar datos:', error);
-        setError(error.message || 'Error al cargar información del pago');
-        toast.error('Error al cargar información del pago');
+        if (isMounted) {
+          setError(error.message || 'Error al cargar información del pago');
+          toast.error('Error al cargar información del pago');
+          setLoading(false);
+        }
       } finally {
-        setLoading(false);
+        if (isMounted) {
+          setLoading(false);
+        }
       }
     };
 
-    if (id) {
-      fetchData();
-    }
+    fetchData();
+    
+    // Cleanup function para evitar actualizar estados en componentes desmontados
+    return () => {
+      isMounted = false;
+    };
   }, [id, router]);
 
-  // Verificar pago con el API interno
+  // Verificar pago con el API interno - sin recarga automática
   const verificarPago = async (requestId) => {
     setVerificandoPago(true);
     setError(null);
@@ -218,17 +243,14 @@ export default function PagoResultado() {
         setPago(data.pago);
         setReservacion(data.reservacion);
         
-        // Si el estado cambió, recargar la página para reflejar el cambio
+        // Si el estado cambió, notificar pero NO recargar la página
         if (pago && data.pago && data.pago.estado !== pago.estado) {
           console.log(`Estado de pago actualizado: ${pago.estado} -> ${data.pago.estado}`);
           
-          // Solo recargar si el pago está aprobado o rechazado
+          // Mostrar notificación sin recargar
           if (data.pago.estado === 'Aprobado' || data.pago.estado === 'Rechazado') {
-            console.log('Recargando página para mostrar estado actualizado');
+            console.log('Mostrando notificación del estado actualizado');
             toast.success(`Pago ${data.pago.estado.toLowerCase()}`);
-            setTimeout(() => {
-              window.location.reload();
-            }, 2000);
           }
         }
       } catch (apiError) {
@@ -245,7 +267,7 @@ export default function PagoResultado() {
     }
   };
   
-  // Verificación directa sin API (para desarrollo o como fallback)
+  // Verificación directa sin API (para desarrollo o como fallback) - sin recarga automática
   const verificarPagoDirectamente = async (requestId) => {
     try {
       console.log('Verificando pago directamente en la base de datos');
@@ -340,9 +362,6 @@ export default function PagoResultado() {
                 });
                 
                 toast.success('Pago aprobado');
-                setTimeout(() => {
-                  window.location.reload();
-                }, 2000);
               }
             }
           }
@@ -405,10 +424,15 @@ export default function PagoResultado() {
 
   // useEffect adicional para verificar inconsistencias entre el pago y la reservación
   useEffect(() => {
+    // Solo ejecutar si tenemos datos cargados y no estamos ya verificando o cargando
+    if (loading || verificandoPago || !pago || !reservacion) return;
+    
+    let isMounted = true;
+    
     // Si estamos en la página de resultado y hay un pago con estado "Aprobado", pero la reservación
     // sigue en "Pendiente", intentamos forzar una actualización
     const actualizarEstadoReservacion = async () => {
-      if (pago && reservacion && pago.estado === 'Aprobado' && reservacion.estado === 'Pendiente') {
+      if (pago.estado === 'Aprobado' && reservacion.estado === 'Pendiente') {
         console.log('Detectada inconsistencia: Pago aprobado pero reservación pendiente. Forzando actualización...');
         
         try {
@@ -424,7 +448,7 @@ export default function PagoResultado() {
               
           if (error) {
             console.error('Error al actualizar reservación:', error);
-          } else if (data) {
+          } else if (data && isMounted) {
             console.log('Reservación actualizada correctamente');
             setReservacion(data);
           }
@@ -434,10 +458,12 @@ export default function PagoResultado() {
       }
     };
     
-    if (!loading && pago && reservacion) {
-      actualizarEstadoReservacion();
-    }
-  }, [pago, reservacion, loading]);
+    actualizarEstadoReservacion();
+    
+    return () => {
+      isMounted = false;
+    };
+  }, [pago, reservacion, loading, verificandoPago]);
 
   if (loading) {
     return (

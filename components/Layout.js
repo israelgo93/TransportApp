@@ -9,29 +9,64 @@ export default function Layout({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Optimización del useEffect para evitar múltiples ejecuciones o bucles
   useEffect(() => {
+    let isMounted = true; // Para evitar actualizar estados en componentes desmontados
+    
     const getUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      setUser(session?.user || null);
-      setLoading(false);
-
-      const { data: authListener } = supabase.auth.onAuthStateChange(
-        (event, session) => {
-          setUser(session?.user || null);
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        if (error) {
+          console.error('Error al verificar sesión:', error);
+          return;
         }
-      );
-
-      return () => {
-        authListener.subscription.unsubscribe();
-      };
+        
+        // Solo actualizar el estado si el componente sigue montado
+        if (isMounted) {
+          setUser(session?.user || null);
+          setLoading(false);
+        }
+        
+        // Suscribirse a cambios en la autenticación
+        const { data: authListener } = supabase.auth.onAuthStateChange(
+          (event, newSession) => {
+            // Solo actualizar el estado si el componente sigue montado
+            if (isMounted) {
+              setUser(newSession?.user || null);
+            }
+          }
+        );
+        
+        // Limpieza de suscripción al desmontar
+        return () => {
+          if (authListener && authListener.subscription) {
+            authListener.subscription.unsubscribe();
+          }
+        };
+      } catch (e) {
+        console.error('Error en getUser:', e);
+        if (isMounted) {
+          setLoading(false);
+        }
+      }
     };
 
     getUser();
-  }, []);
+    
+    // Función de limpieza para evitar actualizaciones en componente desmontado
+    return () => {
+      isMounted = false;
+    };
+  }, []); // Sin dependencias para evitar múltiples ejecuciones
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
-    router.push('/');
+    try {
+      await supabase.auth.signOut();
+      router.push('/');
+    } catch (error) {
+      console.error('Error al cerrar sesión:', error);
+    }
   };
 
   return (

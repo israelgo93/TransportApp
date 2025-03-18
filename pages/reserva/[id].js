@@ -14,11 +14,14 @@ export default function DetalleReservacion() {
   const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
 
-  // Verificar autenticación y cargar datos
+  // Verificar autenticación y cargar datos - mejorado para evitar múltiples peticiones
   useEffect(() => {
+    // Solo ejecutar si id está disponible
+    if (!id) return;
+    
+    let isMounted = true;
+    
     const fetchData = async () => {
-      if (!id) return;
-
       try {
         console.log(`Cargando detalles para reservación: ${id}`);
         
@@ -31,6 +34,9 @@ export default function DetalleReservacion() {
           router.push('/login');
           return;
         }
+        
+        // Solo actualizar estados si el componente sigue montado
+        if (!isMounted) return;
         
         console.log(`Usuario autenticado: ${session.user.id}`);
         setUser(session.user);
@@ -89,7 +95,9 @@ export default function DetalleReservacion() {
 
         if (error) {
           console.error('Error al cargar datos de reservación:', error);
-          setError('Reservación no encontrada');
+          if (isMounted) {
+            setError('Reservación no encontrada');
+          }
           throw new Error('Reservación no encontrada');
         }
         
@@ -102,26 +110,65 @@ export default function DetalleReservacion() {
         
         if (reservacionUserId !== currentUserId) {
           console.error(`La reservación pertenece a ${reservacionUserId}, no a ${currentUserId}`);
-          setError('No tienes permiso para ver esta reservación');
+          if (isMounted) {
+            setError('No tienes permiso para ver esta reservación');
+          }
           throw new Error('No tienes permiso para ver esta reservación');
         }
         
         console.log(`Datos completos cargados para reservación: ${data.reference_code}`);
-        setReservacion(data);
+        
+        // Verificación adicional para sincronizar estado de pago
+        if (data.estado === 'Confirmada' && data.pagos && data.pagos.length > 0) {
+          const pago = data.pagos[0];
+          // Si la reservación está confirmada pero el pago no está marcado como aprobado
+          if (pago.estado !== 'Aprobado') {
+            console.log('Sincronizando estado de pago con reservación confirmada');
+            // Actualizar el estado del pago a Aprobado
+            const { error: updateError } = await supabase
+              .from('pagos')
+              .update({ 
+                estado: 'Aprobado',
+                updated_at: new Date().toISOString()
+              })
+              .eq('id', pago.id);
+              
+            if (updateError) {
+              console.error('Error al actualizar estado de pago:', updateError);
+            } else {
+              // Actualizar el pago en los datos de la reservación
+              data.pagos[0].estado = 'Aprobado';
+              console.log('Estado de pago actualizado a Aprobado');
+            }
+          }
+        }
+        
+        if (isMounted) {
+          setReservacion(data);
+          setLoading(false);
+        }
       } catch (error) {
         console.error('Error al cargar datos:', error);
-        setError(error.message || 'Error al cargar información de la reservación');
-        toast.error(error.message || 'Error al cargar información de la reservación');
+        if (isMounted) {
+          setError(error.message || 'Error al cargar información de la reservación');
+          setLoading(false);
+          toast.error(error.message || 'Error al cargar información de la reservación');
+        }
         // No redirigimos inmediatamente para mostrar el mensaje de error
         setTimeout(() => {
-          router.push('/reservaciones');
+          if (isMounted) {
+            router.push('/reservaciones');
+          }
         }, 3000);
-      } finally {
-        setLoading(false);
       }
     };
 
     fetchData();
+    
+    // Cleanup function para evitar actualizar estados en componentes desmontados
+    return () => {
+      isMounted = false;
+    };
   }, [id, router]);
 
   const formatFecha = (fechaStr) => {
@@ -242,6 +289,16 @@ export default function DetalleReservacion() {
     return total + (asiento.precio || 0);
   }, 0);
 
+  // SOLUCIÓN: Determinar el estado de pago basado en el estado de la reservación
+  const getEstadoPago = () => {
+    // Si no hay pago, mostrar estado basado en la reservación
+    if (!pago || !pago.estado) {
+      return reservacion.estado === 'Confirmada' ? 'Aprobado' : reservacion.estado;
+    }
+    // Si hay pago, mostrar su estado
+    return pago.estado;
+  };
+
   return (
     <div className="max-w-4xl mx-auto">
       <div className="mb-6">
@@ -328,7 +385,7 @@ export default function DetalleReservacion() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <p className="text-gray-600 text-sm">Estado del pago:</p>
-                  <p className="font-medium">{pago.estado || 'N/A'}</p>
+                  <p className="font-medium">{getEstadoPago()}</p>
                 </div>
                 <div>
                   <p className="text-gray-600 text-sm">Monto total:</p>
