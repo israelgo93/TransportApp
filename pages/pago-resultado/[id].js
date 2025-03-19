@@ -4,6 +4,7 @@ import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
+import { navigateToPaymentGateway, navigateTo } from '../../lib/navigationService';
 
 export default function PagoResultado() {
   const router = useRouter();
@@ -34,7 +35,7 @@ export default function PagoResultado() {
         if (!session) {
           console.log('No hay sesión activa, redirigiendo a login');
           toast.error('Debes iniciar sesión para ver los detalles del pago');
-          router.push('/login');
+          navigateTo(`/login?redirect=${encodeURIComponent(`/pago-resultado/${id}`)}`);
           return;
         }
         
@@ -73,7 +74,7 @@ export default function PagoResultado() {
         if (reservacionUserId !== currentUserId) {
           console.error(`La reservación pertenece a ${reservacionUserId}, no a ${currentUserId}`);
           toast.error('No tienes permiso para acceder a esta reservación');
-          router.push('/reservaciones');
+          navigateTo('/reservaciones');
           return;
         }
         
@@ -448,20 +449,6 @@ export default function PagoResultado() {
     }
   };
 
-  // ELIMINADO: useEffect adicional que verificaba inconsistencias causando recargas
-  // Ahora hacemos esta verificación una sola vez durante la carga inicial
-
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4">Verificando el estado de tu pago...</p>
-        </div>
-      </div>
-    );
-  }
-
   const renderEstadoPago = () => {
     const estado = pago?.estado || 'Desconocido';
     const statusMessage = pagoStatus?.status?.message || error || '';
@@ -527,6 +514,17 @@ export default function PagoResultado() {
     );
   };
 
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+          <p className="mt-4">Verificando el estado de tu pago...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="max-w-lg mx-auto">
       <div className="bg-white rounded-lg shadow-md overflow-hidden mb-6">
@@ -556,14 +554,12 @@ export default function PagoResultado() {
             )}
             
             {pago?.estado === 'Pendiente' && pago?.url_redireccion && (
-              <a
-                href={pago.url_redireccion}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                onClick={() => navigateToPaymentGateway(pago.url_redireccion)}
                 className="text-center text-primary hover:underline"
               >
                 Volver a la página de pago
-              </a>
+              </button>
             )}
             
             {pago?.estado === 'Rechazado' && (

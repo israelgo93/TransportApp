@@ -5,9 +5,11 @@ import Link from 'next/link';
 import { supabase } from '../lib/supabase';
 import { useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
+import { navigateTo } from '../lib/navigationService';
 
 export default function Login() {
   const router = useRouter();
+  const { redirect } = router.query;
   const [isLoading, setIsLoading] = useState(false);
   
   const { register, handleSubmit, formState: { errors } } = useForm();
@@ -24,7 +26,13 @@ export default function Login() {
       if (error) throw error;
 
       toast.success('Inicio de sesión exitoso');
-      router.push('/');
+      
+      // Usar navigateTo para evitar recargas innecesarias
+      if (redirect) {
+        navigateTo(decodeURIComponent(redirect));
+      } else {
+        navigateTo('/');
+      }
     } catch (error) {
       console.error('Error al iniciar sesión:', error);
       toast.error(error.message || 'Error al iniciar sesión. Verifica tus credenciales.');

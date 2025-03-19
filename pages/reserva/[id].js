@@ -4,6 +4,7 @@ import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
+import { navigateTo } from '../../lib/navigationService';
 
 export default function DetalleReservacion() {
   const router = useRouter();
@@ -14,162 +15,149 @@ export default function DetalleReservacion() {
   const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
 
-  // Verificar autenticación y cargar datos - mejorado para evitar múltiples peticiones
+  // Verificar autenticación y cargar datos
   useEffect(() => {
     // Solo ejecutar si id está disponible
     if (!id) return;
     
-    let isMounted = true;
-    
-    const fetchData = async () => {
+    const checkAuth = async () => {
       try {
-        console.log(`Cargando detalles para reservación: ${id}`);
-        
         // Verificar sesión del usuario
         const { data: { session } } = await supabase.auth.getSession();
         
         if (!session) {
           console.log('No hay sesión activa, redirigiendo a login');
           toast.error('Debes iniciar sesión para ver los detalles de la reservación');
-          router.push('/login');
+          navigateTo(`/login?redirect=${encodeURIComponent(`/reserva/${id}`)}`);
           return;
         }
         
-        // Solo actualizar estados si el componente sigue montado
-        if (!isMounted) return;
-        
-        console.log(`Usuario autenticado: ${session.user.id}`);
         setUser(session.user);
-
-        // Solución: Cargar directamente todos los datos de la reservación
-        const { data, error } = await supabase
-          .from('reservaciones')
-          .select(`
-            id,
-            fecha_viaje,
-            estado,
-            reference_code,
-            created_at,
-            usuario_id,
-            horarios:horario_id (
-              id,
-              hora_salida,
-              precio,
-              dias_operacion,
-              rutas:ruta_id (
-                id,
-                origen,
-                destino,
-                distancia,
-                duracion_estimada
-              ),
-              buses:bus_id (
-                id,
-                numero,
-                tipo,
-                capacidad,
-                caracteristicas
-              )
-            ),
-            detalles_reservacion (
-              id,
-              precio,
-              asientos:asiento_id (
-                id,
-                numero,
-                tipo
-              )
-            ),
-            pagos (
-              id,
-              monto,
-              estado,
-              place_to_pay_id,
-              url_redireccion,
-              created_at,
-              updated_at
-            )
-          `)
-          .eq('id', id)
-          .single();
-
-        if (error) {
-          console.error('Error al cargar datos de reservación:', error);
-          if (isMounted) {
-            setError('Reservación no encontrada');
-          }
-          throw new Error('Reservación no encontrada');
-        }
-        
-        // Verificar que la reservación pertenece al usuario actual
-        // SOLUCIÓN: Convertir a string ambos IDs para una comparación consistente
-        const reservacionUserId = String(data.usuario_id);
-        const currentUserId = String(session.user.id);
-        
-        console.log(`Comparando IDs - Reservación: ${reservacionUserId}, Usuario actual: ${currentUserId}`);
-        
-        if (reservacionUserId !== currentUserId) {
-          console.error(`La reservación pertenece a ${reservacionUserId}, no a ${currentUserId}`);
-          if (isMounted) {
-            setError('No tienes permiso para ver esta reservación');
-          }
-          throw new Error('No tienes permiso para ver esta reservación');
-        }
-        
-        console.log(`Datos completos cargados para reservación: ${data.reference_code}`);
-        
-        // Verificación adicional para sincronizar estado de pago
-        if (data.estado === 'Confirmada' && data.pagos && data.pagos.length > 0) {
-          const pago = data.pagos[0];
-          // Si la reservación está confirmada pero el pago no está marcado como aprobado
-          if (pago.estado !== 'Aprobado') {
-            console.log('Sincronizando estado de pago con reservación confirmada');
-            // Actualizar el estado del pago a Aprobado
-            const { error: updateError } = await supabase
-              .from('pagos')
-              .update({ 
-                estado: 'Aprobado',
-                updated_at: new Date().toISOString()
-              })
-              .eq('id', pago.id);
-              
-            if (updateError) {
-              console.error('Error al actualizar estado de pago:', updateError);
-            } else {
-              // Actualizar el pago en los datos de la reservación
-              data.pagos[0].estado = 'Aprobado';
-              console.log('Estado de pago actualizado a Aprobado');
-            }
-          }
-        }
-        
-        if (isMounted) {
-          setReservacion(data);
-          setLoading(false);
-        }
+        // Una vez que tenemos el usuario, cargar los datos
+        fetchData(session.user);
       } catch (error) {
-        console.error('Error al cargar datos:', error);
-        if (isMounted) {
-          setError(error.message || 'Error al cargar información de la reservación');
-          setLoading(false);
-          toast.error(error.message || 'Error al cargar información de la reservación');
-        }
-        // No redirigimos inmediatamente para mostrar el mensaje de error
-        setTimeout(() => {
-          if (isMounted) {
-            router.push('/reservaciones');
-          }
-        }, 3000);
+        console.error('Error al verificar autenticación:', error);
+        setError('Error al verificar sesión');
+        setLoading(false);
       }
     };
 
-    fetchData();
-    
-    // Cleanup function para evitar actualizar estados en componentes desmontados
-    return () => {
-      isMounted = false;
-    };
+    checkAuth();
   }, [id, router]);
+
+  // Cargar datos de la reservación
+  const fetchData = async (currentUser) => {
+    if (!currentUser || !id) return;
+    
+    try {
+      console.log(`Cargando detalles para reservación: ${id}`);
+      
+      // Cargar directamente todos los datos de la reservación
+      const { data, error } = await supabase
+        .from('reservaciones')
+        .select(`
+          id,
+          fecha_viaje,
+          estado,
+          reference_code,
+          created_at,
+          usuario_id,
+          horarios:horario_id (
+            id,
+            hora_salida,
+            precio,
+            dias_operacion,
+            rutas:ruta_id (
+              id,
+              origen,
+              destino,
+              distancia,
+              duracion_estimada
+            ),
+            buses:bus_id (
+              id,
+              numero,
+              tipo,
+              capacidad,
+              caracteristicas
+            )
+          ),
+          detalles_reservacion (
+            id,
+            precio,
+            asientos:asiento_id (
+              id,
+              numero,
+              tipo
+            )
+          ),
+          pagos (
+            id,
+            monto,
+            estado,
+            place_to_pay_id,
+            url_redireccion,
+            created_at,
+            updated_at
+          )
+        `)
+        .eq('id', id)
+        .single();
+
+      if (error) {
+        console.error('Error al cargar datos de reservación:', error);
+        setError('Reservación no encontrada');
+        setLoading(false);
+        return;
+      }
+      
+      // Verificar que la reservación pertenece al usuario actual
+      const reservacionUserId = String(data.usuario_id);
+      const currentUserId = String(currentUser.id);
+      
+      if (reservacionUserId !== currentUserId) {
+        console.error(`La reservación pertenece a ${reservacionUserId}, no a ${currentUserId}`);
+        setError('No tienes permiso para ver esta reservación');
+        setLoading(false);
+        return;
+      }
+      
+      console.log(`Datos completos cargados para reservación: ${data.reference_code}`);
+      setReservacion(data);
+      
+      // Verificación adicional para sincronizar estado de pago
+      if (data.estado === 'Confirmada' && data.pagos && data.pagos.length > 0) {
+        const pago = data.pagos[0];
+        // Si la reservación está confirmada pero el pago no está marcado como aprobado
+        if (pago.estado !== 'Aprobado') {
+          console.log('Sincronizando estado de pago con reservación confirmada');
+          // Actualizar el estado del pago a Aprobado
+          const { error: updateError } = await supabase
+            .from('pagos')
+            .update({ 
+              estado: 'Aprobado',
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', pago.id);
+            
+          if (updateError) {
+            console.error('Error al actualizar estado de pago:', updateError);
+          } else {
+            // Actualizar el pago en los datos de la reservación
+            data.pagos[0].estado = 'Aprobado';
+            console.log('Estado de pago actualizado a Aprobado');
+          }
+        }
+      }
+      
+      setLoading(false);
+    } catch (error) {
+      console.error('Error al cargar datos:', error);
+      setError(error.message || 'Error al cargar información de la reservación');
+      setLoading(false);
+      toast.error(error.message || 'Error al cargar información de la reservación');
+    }
+  };
 
   const formatFecha = (fechaStr) => {
     return new Date(fechaStr).toLocaleDateString('es-EC', {
@@ -239,6 +227,7 @@ export default function DetalleReservacion() {
     );
   };
 
+  // Renderizar contenido
   if (loading) {
     return (
       <div className="flex justify-center items-center h-64">
@@ -274,31 +263,6 @@ export default function DetalleReservacion() {
     );
   }
 
-  // Manejo seguro de datos
-  const pago = reservacion.pagos && reservacion.pagos.length > 0 ? reservacion.pagos[0] : {};
-  const fechaCreacion = formatFecha(reservacion.created_at);
-  const horarioRuta = reservacion.horarios?.rutas || {};
-  const horarioBus = reservacion.horarios?.buses || {};
-  const asientos = reservacion.detalles_reservacion || [];
-  
-  const duracionHoras = Math.floor((horarioRuta.duracion_estimada || 0) / 60);
-  const duracionMinutos = (horarioRuta.duracion_estimada || 0) % 60;
-  
-  // Calcular precio total con manejo seguro
-  const precioTotal = asientos.reduce((total, asiento) => {
-    return total + (asiento.precio || 0);
-  }, 0);
-
-  // SOLUCIÓN: Determinar el estado de pago basado en el estado de la reservación
-  const getEstadoPago = () => {
-    // Si no hay pago, mostrar estado basado en la reservación
-    if (!pago || !pago.estado) {
-      return reservacion.estado === 'Confirmada' ? 'Aprobado' : reservacion.estado;
-    }
-    // Si hay pago, mostrar su estado
-    return pago.estado;
-  };
-
   return (
     <div className="max-w-4xl mx-auto">
       <div className="mb-6">
@@ -327,7 +291,7 @@ export default function DetalleReservacion() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <p className="text-gray-600 text-sm">Ruta:</p>
-                  <p className="font-medium">{horarioRuta.origen} → {horarioRuta.destino}</p>
+                  <p className="font-medium">{reservacion.horarios?.rutas?.origen || 'N/A'} → {reservacion.horarios?.rutas?.destino || 'N/A'}</p>
                 </div>
                 <div>
                   <p className="text-gray-600 text-sm">Fecha:</p>
@@ -339,7 +303,11 @@ export default function DetalleReservacion() {
                 </div>
                 <div>
                   <p className="text-gray-600 text-sm">Duración estimada:</p>
-                  <p className="font-medium">{duracionHoras}h {duracionMinutos}min ({horarioRuta.distancia} km)</p>
+                  <p className="font-medium">
+                    {Math.floor((reservacion.horarios?.rutas?.duracion_estimada || 0) / 60)}h {
+                      (reservacion.horarios?.rutas?.duracion_estimada || 0) % 60
+                    }min ({reservacion.horarios?.rutas?.distancia || 0} km)
+                  </p>
                 </div>
               </div>
             </div>
@@ -348,11 +316,11 @@ export default function DetalleReservacion() {
               <div>
                 <h3 className="font-medium mb-2">Información del Bus</h3>
                 <div className="bg-gray-50 p-4 rounded-lg">
-                  <p><span className="text-gray-600">Número:</span> {horarioBus.numero}</p>
-                  <p><span className="text-gray-600">Tipo:</span> {horarioBus.tipo}</p>
+                  <p><span className="text-gray-600">Número:</span> {reservacion.horarios?.buses?.numero || 'N/A'}</p>
+                  <p><span className="text-gray-600">Tipo:</span> {reservacion.horarios?.buses?.tipo || 'N/A'}</p>
                   <p><span className="text-gray-600">Comodidades:</span></p>
                   <ul className="list-disc list-inside text-sm pl-2">
-                    {Object.entries(horarioBus.caracteristicas || {})
+                    {Object.entries(reservacion.horarios?.buses?.caracteristicas || {})
                       .filter(([_, valor]) => valor === true)
                       .map(([clave]) => (
                         <li key={clave}>{clave}</li>
@@ -365,9 +333,9 @@ export default function DetalleReservacion() {
                 <h3 className="font-medium mb-2">Asientos Reservados</h3>
                 <div className="bg-gray-50 p-4 rounded-lg">
                   <div className="flex flex-wrap gap-2 mb-2">
-                    {asientos.map(asiento => (
+                    {reservacion.detalles_reservacion?.map(asiento => (
                       <span key={asiento.id} className="px-2 py-1 bg-primary text-white text-sm rounded">
-                        Asiento {asiento.asientos?.numero}
+                        Asiento {asiento.asientos?.numero || 'N/A'}
                       </span>
                     ))}
                   </div>
@@ -385,21 +353,29 @@ export default function DetalleReservacion() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <p className="text-gray-600 text-sm">Estado del pago:</p>
-                  <p className="font-medium">{getEstadoPago()}</p>
+                  <p className="font-medium">
+                    {reservacion.pagos && reservacion.pagos.length > 0 
+                      ? reservacion.pagos[0].estado 
+                      : reservacion.estado === 'Confirmada' ? 'Aprobado' : reservacion.estado}
+                  </p>
                 </div>
                 <div>
                   <p className="text-gray-600 text-sm">Monto total:</p>
-                  <p className="font-medium text-lg text-primary">${pago.monto?.toFixed(2) || precioTotal.toFixed(2)}</p>
+                  <p className="font-medium text-lg text-primary">
+                    ${reservacion.pagos && reservacion.pagos.length > 0 
+                        ? (reservacion.pagos[0].monto || 0).toFixed(2) 
+                        : (reservacion.detalles_reservacion?.reduce((total, asiento) => total + (asiento.precio || 0), 0) || 0).toFixed(2)}
+                  </p>
                 </div>
-                {pago.place_to_pay_id && (
+                {reservacion.pagos && reservacion.pagos.length > 0 && reservacion.pagos[0].place_to_pay_id && (
                   <div>
                     <p className="text-gray-600 text-sm">ID de transacción:</p>
-                    <p className="font-medium">{pago.place_to_pay_id}</p>
+                    <p className="font-medium">{reservacion.pagos[0].place_to_pay_id}</p>
                   </div>
                 )}
                 <div>
                   <p className="text-gray-600 text-sm">Fecha de reserva:</p>
-                  <p className="font-medium">{fechaCreacion}</p>
+                  <p className="font-medium">{formatFecha(reservacion.created_at)}</p>
                 </div>
               </div>
             </div>

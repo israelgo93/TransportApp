@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { supabase } from '../lib/supabase';
+import { navigateTo } from '../lib/navigationService';
 
 export default function Layout({ children }) {
   const router = useRouter();
@@ -64,7 +65,7 @@ export default function Layout({ children }) {
   const handleSignOut = async () => {
     try {
       await supabase.auth.signOut();
-      router.push('/');
+      navigateTo('/');
     } catch (error) {
       console.error('Error al cerrar sesión:', error);
     }
@@ -103,7 +104,6 @@ export default function Layout({ children }) {
             
             {/* Desktop menu */}
             <div className="hidden lg:flex items-center space-x-6">
-              {/* Cambiado el enlace de /rutas a / - el buscador de rutas está en la página principal */}
               <Link href="/" className="hover:underline">
                 Rutas y Horarios
               </Link>
@@ -148,7 +148,6 @@ export default function Layout({ children }) {
           {/* Mobile menu */}
           <div className={`lg:hidden mt-3 ${menuOpen ? 'block' : 'hidden'}`}>
             <div className="flex flex-col space-y-2 pt-2 border-t border-white border-opacity-20">
-              {/* Cambiado el enlace de /rutas a / - el buscador de rutas está en la página principal */}
               <Link href="/" className="py-2 hover:bg-white hover:bg-opacity-10 px-2 rounded">
                 Rutas y Horarios
               </Link>
@@ -204,7 +203,6 @@ export default function Layout({ children }) {
               <p className="text-sm">Transporte seguro y confiable</p>
             </div>
             <div className="flex flex-col md:flex-row gap-4 text-center md:text-left">
-              {/* También corregido aquí para mantener coherencia */}
               <Link href="/" className="text-sm text-gray-300 hover:text-white">
                 Rutas
               </Link>

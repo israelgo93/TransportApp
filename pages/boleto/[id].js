@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import QRCode from 'qrcode.react';
+import { navigateTo } from '../../lib/navigationService';
 
 export default function Boleto() {
   const router = useRouter();
@@ -15,6 +16,7 @@ export default function Boleto() {
   const [reservacion, setReservacion] = useState(null);
   const [perfilUsuario, setPerfilUsuario] = useState(null);
   const [user, setUser] = useState(null);
+  const [error, setError] = useState(null);
 
   // Verificar autenticación y cargar datos
   useEffect(() => {
@@ -30,7 +32,7 @@ export default function Boleto() {
         
         if (!session) {
           toast.error('Debes iniciar sesión para ver tu boleto');
-          router.push('/login');
+          navigateTo(`/login?redirect=${encodeURIComponent(`/boleto/${id}`)}`);
           return;
         }
         
@@ -88,13 +90,13 @@ export default function Boleto() {
         // Verificar que la reservación pertenece al usuario y está confirmada
         if (reservacionData.usuario_id !== session.user.id) {
           toast.error('No tienes permiso para ver este boleto');
-          router.push('/reservaciones');
+          navigateTo('/reservaciones');
           return;
         }
 
         if (reservacionData.estado !== 'Confirmada') {
           toast.error('Este boleto no está confirmado. Completa el pago primero.');
-          router.push(`/reserva/${id}`);
+          navigateTo(`/reserva/${id}`);
           return;
         }
         
@@ -115,11 +117,12 @@ export default function Boleto() {
           setPerfilUsuario(perfilData);
           console.log('Perfil de usuario cargado correctamente');
         }
+        
+        setLoading(false);
       } catch (error) {
         console.error('Error al cargar datos:', error);
+        setError('Error al cargar información del boleto');
         toast.error('Error al cargar información del boleto');
-        router.push('/reservaciones');
-      } finally {
         setLoading(false);
       }
     };
@@ -241,6 +244,18 @@ export default function Boleto() {
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
           <p className="mt-4">Cargando tu boleto...</p>
         </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="max-w-4xl mx-auto text-center py-10">
+        <h2 className="text-2xl font-bold mb-4">Error</h2>
+        <p className="mb-4 text-red-500">{error}</p>
+        <Link href="/reservaciones" className="text-primary hover:underline">
+          Ver mis reservaciones
+        </Link>
       </div>
     );
   }

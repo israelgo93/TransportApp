@@ -1,18 +1,17 @@
 // pages/reservaciones.js
 import { useState, useEffect } from 'react';
-import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
+import { navigateTo } from '../lib/navigationService';
 
 export default function Reservaciones() {
-  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [reservaciones, setReservaciones] = useState([]);
   const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
 
-  // Verificar autenticación - Modificado para prevenir llamadas múltiples
+  // Verificar autenticación al cargar el componente
   useEffect(() => {
     const checkAuth = async () => {
       try {
@@ -26,28 +25,24 @@ export default function Reservaciones() {
         if (!session) {
           console.log('No hay sesión activa, redirigiendo a login');
           toast.error('Debes iniciar sesión para ver tus reservaciones');
-          router.push('/login?redirect=/reservaciones');
+          navigateTo('/login?redirect=/reservaciones');
           return;
         }
         
         console.log(`Usuario autenticado: ${session.user.id}`);
         setUser(session.user);
-        // Llamar a fetchReservaciones directamente aquí
-        // en lugar de usar otro useEffect que dependa de user
+        // Cargar reservaciones una vez que tenemos el usuario
         fetchReservaciones(session.user.id);
       } catch (error) {
         console.error('Error de autenticación:', error);
         setError('Error al verificar la sesión');
         toast.error('Error al verificar la sesión');
-        router.push('/login');
+        navigateTo('/login');
       }
     };
 
     checkAuth();
-    
-    // No agregar user al arreglo de dependencias para evitar
-    // que se ejecute múltiples veces
-  }, [router]);
+  }, []);
 
   // Cargar reservaciones del usuario
   const fetchReservaciones = async (userId) => {

@@ -4,6 +4,7 @@ import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
+import { navigateToPaymentGateway, navigateTo } from '../../lib/navigationService';
 
 export default function Pago() {
   const router = useRouter();
@@ -32,7 +33,7 @@ export default function Pago() {
         
         if (!session) {
           toast.error('Debes iniciar sesión para completar el pago');
-          router.push('/login');
+          navigateTo(`/login?redirect=${encodeURIComponent(`/pago/${id}`)}`);
           return;
         }
         
@@ -86,7 +87,7 @@ export default function Pago() {
         if (String(reservacionData.usuario_id) !== String(session.user.id)) {
           console.error(`Intento de acceso no autorizado. Reserva: ${reservacionData.id}, Usuario: ${session.user.id}`);
           toast.error('No tienes permiso para acceder a esta reservación');
-          router.push('/reservaciones');
+          navigateTo('/reservaciones');
           return;
         }
         
@@ -187,14 +188,14 @@ export default function Pago() {
           // Si ya hay una URL de pago válida y el pago está pendiente, redirigir automáticamente
           if (pagoData.url_redireccion && pagoData.estado === 'Pendiente' && !router.query.retry) {
             console.log('Redirigiendo a la URL de pago existente:', pagoData.url_redireccion);
-            window.location.href = pagoData.url_redireccion;
+            navigateToPaymentGateway(pagoData.url_redireccion);
             return;
           }
         }
       } catch (error) {
         console.error('Error al cargar datos:', error);
         toast.error('Error al cargar información de la reservación');
-        router.push('/reservaciones');
+        navigateTo('/reservaciones');
       } finally {
         setLoading(false);
       }
@@ -224,7 +225,7 @@ export default function Pago() {
       // Si ya tenemos una URL de redirección, usarla (a menos que sea un reintento)
       if (pago.url_redireccion && !router.query.retry) {
         console.log(`Redirigiendo a URL de pago existente: ${pago.url_redireccion}`);
-        window.location.href = pago.url_redireccion;
+        navigateToPaymentGateway(pago.url_redireccion);
         return;
       }
 
@@ -326,13 +327,13 @@ export default function Pago() {
       }
 
       // Redirigir a PlaceToPay
-      window.location.href = data.processUrl;
+      navigateToPaymentGateway(data.processUrl);
     } catch (error) {
       console.error('Error al procesar pago:', error);
       toast.error('Error al procesar el pago: ' + error.message);
       setProcesandoPago(false);
     }
-};
+  };
 
   if (loading) {
     return (

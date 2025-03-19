@@ -1,10 +1,10 @@
-// pages/registro.js
 import { useState } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { supabase } from '../lib/supabase';
 import { useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
+import { navigateTo } from '../lib/navigationService';
 
 export default function Registro() {
   const router = useRouter();
@@ -20,15 +20,14 @@ export default function Registro() {
       console.log("Iniciando proceso de registro...");
       
       // 1. Registrar usuario en Supabase Auth
+      // Importante: Evitar incluir demasiados datos en metadata
+      // para prevenir problemas con el tamaño de los datos
       const { data: authData, error: authError } = await supabase.auth.signUp({
         email: data.email,
         password: data.password,
         options: {
-          // Incluir metadata para que esté disponible aunque el perfil falle
           data: {
-            full_name: `${data.nombre} ${data.apellido}`,
-            nombre: data.nombre,
-            apellido: data.apellido
+            full_name: `${data.nombre} ${data.apellido}`
           }
         }
       });
@@ -46,38 +45,60 @@ export default function Registro() {
       console.log(`Usuario creado con ID: ${authData.user.id}`);
       
       // 2. Esperar un momento para que el trigger cree el perfil
-      // Esto ayuda a evitar condiciones de carrera
-      await new Promise(resolve => setTimeout(resolve, 500));
+      await new Promise(resolve => setTimeout(resolve, 1000));
 
-      // 3. Intentar actualizar el perfil en lugar de upsert
-      // Esto funciona con la política RLS existente
-      console.log("Actualizando perfil...");
+      // 3. Insertar o actualizar el perfil del usuario (upsert en lugar de solo update)
+      console.log("Creando o actualizando perfil de usuario...");
+      
+      // Primero verificamos si el perfil ya existe
+      const { data: existingProfile, error: profileCheckError } = await supabase
+        .from('profiles')
+        .select('id')
+        .eq('id', authData.user.id)
+        .maybeSingle();
+        
+      if (profileCheckError && profileCheckError.code !== 'PGRST116') {
+        console.warn("Error al verificar perfil existente:", profileCheckError);
+      }
+      
+      // Si el perfil existe o no está claro, intentamos una operación upsert
       const { error: profileError } = await supabase
         .from('profiles')
-        .update({
+        .upsert({
+          id: authData.user.id,
           nombre: data.nombre,
           apellido: data.apellido,
           cedula: data.cedula,
           telefono: data.telefono,
+          created_at: new Date().toISOString(),
           updated_at: new Date().toISOString()
-        })
-        .eq('id', authData.user.id);
+        }, {
+          onConflict: 'id',
+          ignoreDuplicates: false
+        });
 
       if (profileError) {
         console.warn("Error al actualizar perfil:", profileError);
-        // No lanzamos error aquí - el usuario ya está creado
-        // y el trigger debería haber creado un perfil vacío
-        // El usuario podrá actualizar su perfil después de iniciar sesión
+        // No lanzamos error aquí, porque el usuario ya está creado
+        // Solo mostramos una advertencia
         toast.warn('Tu cuenta fue creada, pero hubo un problema al guardar tus datos personales. Podrás actualizarlos después de iniciar sesión.');
       } else {
         console.log("Perfil actualizado correctamente");
       }
 
       toast.success('Registro exitoso. Verifica tu correo electrónico.');
-      router.push('/login');
+      navigateTo('/login');
     } catch (error) {
       console.error('Error al registrar:', error);
-      toast.error(error.message || 'Error al registrar. Inténtalo de nuevo.');
+      
+      // Mensajes de error más específicos según el tipo de error
+      if (error.message?.includes('already registered')) {
+        toast.error('Este correo electrónico ya está registrado. Intenta con otro o recupera tu contraseña.');
+      } else if (error.message?.includes('validation')) {
+        toast.error('Datos de registro inválidos. Verifica la información ingresada.');
+      } else {
+        toast.error(error.message || 'Error al registrar. Inténtalo de nuevo.');
+      }
     } finally {
       setIsLoading(false);
     }
