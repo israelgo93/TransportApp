@@ -1,60 +1,55 @@
 // pages/pago/[id].js
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/router';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { navigateToPaymentGateway, navigateTo } from '../../lib/navigationService';
+import { useAuth } from '../../lib/AuthContext'; // Contexto centralizado de auth
+
+// Hook personalizado para obtener parámetros de ruta
+function useParams() {
+  const router = typeof window !== 'undefined' ? 
+    require('next/router').useRouter() : { query: {} };
+  return router.query || {};
+}
 
 export default function Pago() {
-  const router = useRouter();
-  const { id } = router.query;
+  // Obtener el ID de la reservación de la URL
+  const { id, retry } = useParams();
   
+  // Estados locales
   const [loading, setLoading] = useState(true);
   const [procesandoPago, setProcesandoPago] = useState(false);
-  const [user, setUser] = useState(null);
-  const [userProfile, setUserProfile] = useState(null);
   const [reservacion, setReservacion] = useState(null);
   const [horario, setHorario] = useState(null);
   const [ruta, setRuta] = useState(null);
   const [pago, setPago] = useState(null);
   const [asientos, setAsientos] = useState([]);
+  const [error, setError] = useState(null);
 
-  // Verificar autenticación y cargar datos
+  // Usar contexto de autenticación centralizado
+  const { user, profile, loading: authLoading } = useAuth();
+
+  // Cache de solicitudes de pago para prevenir duplicados
+  const paymentRequestCache = useMemo(() => new Map(), []);
+
+  // Efecto para cargar datos de la reservación
   useEffect(() => {
-    const fetchData = async () => {
-      if (!id) return;
+    // Solo ejecutar si id está disponible y tenemos usuario autenticado
+    if (!id || authLoading) return;
 
+    // Si no hay usuario después de verificar autenticación, redirigir a login
+    if (!user && !authLoading) {
+      toast.error('Debes iniciar sesión para completar el pago');
+      navigateTo(`/login?redirect=${encodeURIComponent(`/pago/${id}`)}`);
+      return;
+    }
+
+    const fetchData = async () => {
       try {
         console.log(`Iniciando carga de datos para reservación: ${id}`);
         
-        // Obtener sesión del usuario
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (!session) {
-          toast.error('Debes iniciar sesión para completar el pago');
-          navigateTo(`/login?redirect=${encodeURIComponent(`/pago/${id}`)}`);
-          return;
-        }
-        
-        setUser(session.user);
-        console.log(`Usuario autenticado: ${session.user.id}`);
-
-        // Obtener el perfil del usuario
-        const { data: profileData, error: profileError } = await supabase
-          .from('profiles')
-          .select('*')
-          .eq('id', session.user.id)
-          .single();
-
-        if (profileError) {
-          console.error('Error al cargar perfil de usuario:', profileError);
-        } else {
-          setUserProfile(profileData);
-          console.log('Perfil de usuario cargado:', profileData.nombre, profileData.apellido);
-        }
-
-        // Obtener datos de reservación
+        // Cargar datos de reservación
         const { data: reservacionData, error: reservacionError } = await supabase
           .from('reservaciones')
           .select(`
@@ -84,8 +79,8 @@ export default function Pago() {
         }
         
         // Verificar que la reservación pertenece al usuario
-        if (String(reservacionData.usuario_id) !== String(session.user.id)) {
-          console.error(`Intento de acceso no autorizado. Reserva: ${reservacionData.id}, Usuario: ${session.user.id}`);
+        if (reservacionData.usuario_id !== user.id) {
+          console.error(`Intento de acceso no autorizado. Reserva: ${reservacionData.id}, Usuario: ${user.id}`);
           toast.error('No tienes permiso para acceder a esta reservación');
           navigateTo('/reservaciones');
           return;
@@ -97,13 +92,13 @@ export default function Pago() {
         // Ordenar asientos por número
         const asientosOrdenados = reservacionData.detalles_reservacion
           .map(detalle => detalle.asientos)
-          .filter(asiento => asiento) // Filtrar posibles nulos
+          .filter(Boolean) // Filtrar posibles nulos
           .sort((a, b) => a.numero - b.numero);
         
         setAsientos(asientosOrdenados);
         console.log(`${asientosOrdenados.length} asientos reservados`);
 
-        // Obtener datos del horario
+        // Cargar datos del horario
         const { data: horarioData, error: horarioError } = await supabase
           .from('horarios')
           .select(`
@@ -128,7 +123,7 @@ export default function Pago() {
         setHorario(horarioData);
         console.log(`Horario cargado, ruta: ${horarioData.ruta_id}`);
 
-        // Obtener datos de la ruta
+        // Cargar datos de la ruta
         const { data: rutaData, error: rutaError } = await supabase
           .from('rutas')
           .select('*')
@@ -143,87 +138,121 @@ export default function Pago() {
         setRuta(rutaData);
         console.log(`Ruta cargada: ${rutaData.origen} → ${rutaData.destino}`);
 
-        // Obtener datos del pago
+        // Cargar datos del pago
         const { data: pagoData, error: pagoError } = await supabase
           .from('pagos')
           .select('*')
           .eq('reservacion_id', id)
           .single();
 
-        if (pagoError) {
-          // Si no existe un pago, lo creamos
-          if (pagoError.code === 'PGRST116') {
-            console.log('No existe un pago para esta reservación, creando uno nuevo...');
-            
-            // Calcular monto total sumando el precio de todos los asientos
-            const montoTotal = reservacionData.detalles_reservacion.reduce(
-              (total, detalle) => total + (detalle.precio || 0), 
-              0
-            );
-            
-            const { data: nuevoPago, error: nuevoPagoError } = await supabase
-              .from('pagos')
-              .insert([{
-                reservacion_id: id,
-                monto: montoTotal,
-                estado: 'Pendiente'
-              }])
-              .select()
-              .single();
-              
-            if (nuevoPagoError) {
-              console.error('Error al crear nuevo pago:', nuevoPagoError);
-              throw nuevoPagoError;
-            }
-            
-            console.log(`Nuevo pago creado con id: ${nuevoPago.id}`);
-            setPago(nuevoPago);
-          } else {
+        // Si no existe un pago o hubo error, crearlo
+        if (pagoError || !pagoData) {
+          if (pagoError && pagoError.code !== 'PGRST116') {
+            console.error('Error al cargar pago:', pagoError);
             throw pagoError;
           }
+          
+          console.log('No existe un pago para esta reservación, creando uno nuevo...');
+          
+          // Calcular monto total sumando el precio de todos los asientos
+          const montoTotal = reservacionData.detalles_reservacion.reduce(
+            (total, detalle) => total + (detalle.precio || 0), 
+            0
+          );
+          
+          const { data: nuevoPago, error: nuevoPagoError } = await supabase
+            .from('pagos')
+            .insert([{
+              reservacion_id: id,
+              monto: montoTotal,
+              estado: 'Pendiente',
+              created_at: new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            }])
+            .select()
+            .single();
+            
+          if (nuevoPagoError) {
+            console.error('Error al crear nuevo pago:', nuevoPagoError);
+            throw nuevoPagoError;
+          }
+          
+          console.log(`Nuevo pago creado con id: ${nuevoPago.id}`);
+          setPago(nuevoPago);
         } else {
           console.log(`Pago existente cargado, id: ${pagoData.id}, estado: ${pagoData.estado}`);
           setPago(pagoData);
           
           // Si ya hay una URL de pago válida y el pago está pendiente, redirigir automáticamente
-          if (pagoData.url_redireccion && pagoData.estado === 'Pendiente' && !router.query.retry) {
+          // a menos que sea un reintento explícito
+          if (pagoData.url_redireccion && pagoData.estado === 'Pendiente' && !retry) {
             console.log('Redirigiendo a la URL de pago existente:', pagoData.url_redireccion);
             navigateToPaymentGateway(pagoData.url_redireccion);
             return;
           }
         }
+        
+        setLoading(false);
       } catch (error) {
         console.error('Error al cargar datos:', error);
+        setError('Error al cargar información de la reservación');
         toast.error('Error al cargar información de la reservación');
-        navigateTo('/reservaciones');
-      } finally {
         setLoading(false);
       }
     };
 
     fetchData();
-  }, [id, router]);
+  }, [id, user, authLoading, retry]);
 
-  // Iniciar Pago: Función mejorada para el archivo pages/pago/[id].js
-  const iniciarPago = async () => {
+  // Función para iniciar un pago - Optimizada y memoizada
+  const iniciarPago = useCallback(async () => {
     if (!reservacion || !pago || !user) {
       toast.error('Información de reserva incompleta');
       return;
     }
 
+    if (procesandoPago) {
+      return; // Prevenir envíos múltiples
+    }
+
+    // Verificar cache para evitar solicitudes duplicadas
+    const requestCacheKey = `${reservacion.id}-${Date.now().toString().slice(0, -3)}`;
+    if (paymentRequestCache.has(requestCacheKey)) {
+      console.log('Solicitud de pago duplicada detectada. Ignorando.');
+      return;
+    }
+    
+    // Marcar como en proceso y registrar en caché
     setProcesandoPago(true);
+    paymentRequestCache.set(requestCacheKey, Date.now());
+    
+    // Limpiar entradas antiguas del caché
+    const now = Date.now();
+    paymentRequestCache.forEach((timestamp, key) => {
+      if (now - timestamp > 300000) { // 5 minutos
+        paymentRequestCache.delete(key);
+      }
+    });
+
     try {
-      // Obtener datos del perfil del usuario
-      const { data: perfilData, error: perfilError } = await supabase
-        .from('profiles')
-        .select('nombre, apellido, cedula, telefono')
-        .eq('id', user.id)
-        .single();
-
-      if (perfilError) throw perfilError;
-
-      // Si ya tenemos una URL de redirección, usarla (a menos que sea un reintento)
-      if (pago.url_redireccion && !router.query.retry) {
+      // Si ya tenemos una URL de redirección y es un reintento, limpiarla
+      if (pago.url_redireccion && retry) {
+        console.log('Reintentar pago: limpiando URL anterior');
+        
+        const { error: updateUrlError } = await supabase
+          .from('pagos')
+          .update({ 
+            url_redireccion: null,
+            updated_at: new Date().toISOString()
+          })
+          .eq('id', pago.id);
+          
+        if (updateUrlError) {
+          console.warn('Error al limpiar URL antigua:', updateUrlError);
+        }
+      } 
+      // Si ya tenemos una URL de redirección válida y no es un reintento, usarla
+      else if (pago.url_redireccion && !retry) {
         console.log(`Redirigiendo a URL de pago existente: ${pago.url_redireccion}`);
         navigateToPaymentGateway(pago.url_redireccion);
         return;
@@ -239,9 +268,9 @@ export default function Pago() {
         amount: pago.monto,
         currency: 'USD',
         buyerEmail: user.email,
-        buyerName: perfilData.nombre || 'Cliente',
-        buyerSurname: perfilData.apellido || 'Web',
-        buyerDocument: perfilData.cedula || '0000000000',
+        buyerName: profile?.nombre || 'Cliente',
+        buyerSurname: profile?.apellido || 'Web',
+        buyerDocument: profile?.cedula || '0000000000',
         buyerDocumentType: 'CC',
         returnUrl,
         notificationUrl,
@@ -272,7 +301,7 @@ export default function Pago() {
         processUrl: data.processUrl ? 'URL disponible' : 'No URL'
       });
 
-      // ACTUALIZACIÓN CRÍTICA: Guardar el requestId y URL en la base de datos
+      // Verificar que tenemos requestId
       if (!data.requestId) {
         throw new Error('No se recibió requestId de PlaceToPay');
       }
@@ -280,7 +309,7 @@ export default function Pago() {
       const requestId = data.requestId.toString();
       console.log(`Actualizando pago ${pago.id} con requestId: ${requestId}`);
       
-      // Primero, actualizar en Supabase
+      // Actualizar pago en Supabase
       const { error: updateError } = await supabase
         .from('pagos')
         .update({
@@ -296,7 +325,7 @@ export default function Pago() {
         throw updateError;
       }
 
-      // VERIFICACIÓN CRÍTICA: Confirmar que el requestId se guardó correctamente
+      // Verificar que el requestId se guardó correctamente
       const { data: updatedPago, error: verifyError } = await supabase
         .from('pagos')
         .select('place_to_pay_id, url_redireccion')
@@ -305,24 +334,21 @@ export default function Pago() {
         
       if (verifyError) {
         console.error('Error al verificar actualización:', verifyError);
-      } else {
-        console.log('Pago actualizado, place_to_pay_id:', updatedPago.place_to_pay_id);
-        if (updatedPago.place_to_pay_id !== requestId) {
-          console.error('¡ALERTA! El requestId no se guardó correctamente');
-          console.error('- Esperado:', requestId);
-          console.error('- Guardado:', updatedPago.place_to_pay_id);
+      } else if (updatedPago.place_to_pay_id !== requestId) {
+        console.error('¡ALERTA! El requestId no se guardó correctamente');
+        console.error('- Esperado:', requestId);
+        console.error('- Guardado:', updatedPago.place_to_pay_id);
+        
+        // Intento adicional de actualización
+        const { error: retryError } = await supabase
+          .from('pagos')
+          .update({ place_to_pay_id: requestId })
+          .eq('id', pago.id);
           
-          // Intento adicional de actualización
-          const { error: retryError } = await supabase
-            .from('pagos')
-            .update({ place_to_pay_id: requestId })
-            .eq('id', pago.id);
-            
-          if (retryError) {
-            console.error('Error en segundo intento de actualización:', retryError);
-          } else {
-            console.log('Segundo intento de actualización exitoso');
-          }
+        if (retryError) {
+          console.error('Error en segundo intento de actualización:', retryError);
+        } else {
+          console.log('Segundo intento de actualización exitoso');
         }
       }
 
@@ -333,17 +359,48 @@ export default function Pago() {
       toast.error('Error al procesar el pago: ' + error.message);
       setProcesandoPago(false);
     }
-  };
+  }, [reservacion, pago, user, profile, ruta, procesandoPago, retry, paymentRequestCache]);
 
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4">Cargando información de pago...</p>
-        </div>
+  // Contenido de carga (memoizado para evitar recreaciones)
+  const loadingContent = useMemo(() => (
+    <div className="flex justify-center items-center h-64">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+        <p className="mt-4">Cargando información de pago...</p>
       </div>
-    );
+    </div>
+  ), []);
+
+  // Contenido de error (memoizado)
+  const errorContent = useMemo(() => (
+    <div className="max-w-4xl mx-auto text-center py-10">
+      <h2 className="text-2xl font-bold mb-4">Error</h2>
+      <p className="mb-4 text-red-500">{error}</p>
+      <Link href="/reservaciones" className="text-primary hover:underline">
+        Ver mis reservaciones
+      </Link>
+    </div>
+  ), [error]);
+
+  // Formato de fecha
+  const formatFecha = useCallback((dateStr) => {
+    return new Date(dateStr).toLocaleDateString('es-EC');
+  }, []);
+
+  // Formato de hora
+  const formatHora = useCallback((timeStr) => {
+    if (!timeStr) return '';
+    return timeStr.substring(0, 5);
+  }, []);
+
+  // Mostrar pantalla de carga mientras se verifica autenticación o se cargan datos
+  if (authLoading || loading) {
+    return loadingContent;
+  }
+
+  // Mostrar error si ocurrió alguno
+  if (error) {
+    return errorContent;
   }
 
   return (
@@ -361,19 +418,19 @@ export default function Pago() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <p className="text-gray-600">Ruta:</p>
-                  <p className="font-medium">{ruta.origen} → {ruta.destino}</p>
+                  <p className="font-medium">{ruta?.origen} → {ruta?.destino}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Fecha:</p>
-                  <p className="font-medium">{new Date(reservacion.fecha_viaje).toLocaleDateString('es-EC')}</p>
+                  <p className="font-medium">{formatFecha(reservacion?.fecha_viaje)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Hora de Salida:</p>
-                  <p className="font-medium">{horario.hora_salida.substring(0, 5)}</p>
+                  <p className="font-medium">{formatHora(horario?.hora_salida)}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Bus:</p>
-                  <p className="font-medium">{horario.buses.numero} - {horario.buses.tipo}</p>
+                  <p className="font-medium">{horario?.buses?.numero} - {horario?.buses?.tipo}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Asientos:</p>
@@ -383,7 +440,7 @@ export default function Pago() {
                 </div>
                 <div>
                   <p className="text-gray-600">Código de Referencia:</p>
-                  <p className="font-medium">{reservacion.reference_code}</p>
+                  <p className="font-medium">{reservacion?.reference_code}</p>
                 </div>
               </div>
             </div>
@@ -396,11 +453,11 @@ export default function Pago() {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
                   <p className="text-gray-600">Nombre:</p>
-                  <p className="font-medium">{userProfile?.nombre} {userProfile?.apellido}</p>
+                  <p className="font-medium">{profile?.nombre} {profile?.apellido}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Cédula:</p>
-                  <p className="font-medium">{userProfile?.cedula || 'No disponible'}</p>
+                  <p className="font-medium">{profile?.cedula || 'No disponible'}</p>
                 </div>
                 <div>
                   <p className="text-gray-600">Email:</p>
@@ -408,11 +465,11 @@ export default function Pago() {
                 </div>
                 <div>
                   <p className="text-gray-600">Teléfono:</p>
-                  <p className="font-medium">{userProfile?.telefono || 'No disponible'}</p>
+                  <p className="font-medium">{profile?.telefono || 'No disponible'}</p>
                 </div>
               </div>
               
-              {(!userProfile?.nombre || !userProfile?.apellido || !userProfile?.cedula) && (
+              {(!profile?.nombre || !profile?.apellido || !profile?.cedula) && (
                 <div className="mt-3 p-3 bg-yellow-100 text-yellow-800 rounded-lg">
                   <p className="text-sm">
                     Tu perfil está incompleto. 
@@ -428,11 +485,11 @@ export default function Pago() {
             <div className="border-t border-b py-4">
               <div className="flex justify-between mb-2">
                 <span className="text-gray-600">Pasajes ({asientos.length}):</span>
-                <span>${(pago.monto).toFixed(2)}</span>
+                <span>${pago?.monto?.toFixed(2) || '0.00'}</span>
               </div>
               <div className="flex justify-between font-bold text-lg">
                 <span>Total:</span>
-                <span className="text-primary">${pago.monto.toFixed(2)}</span>
+                <span className="text-primary">${pago?.monto?.toFixed(2) || '0.00'}</span>
               </div>
             </div>
           </div>
@@ -443,7 +500,15 @@ export default function Pago() {
               disabled={procesandoPago}
               className="bg-primary text-white py-3 px-6 rounded hover:bg-opacity-90 disabled:opacity-50 transition"
             >
-              {procesandoPago ? 'Procesando...' : 'Pagar con Place to Pay'}
+              {procesandoPago ? (
+                <span className="flex items-center justify-center">
+                  <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Procesando...
+                </span>
+              ) : 'Pagar con Place to Pay'}
             </button>
             
             <Link 

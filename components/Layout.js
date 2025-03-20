@@ -1,66 +1,21 @@
-///home/phiuser/phi/transporte-app/components/Layout.js
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import { supabase } from '../lib/supabase';
 import { navigateTo } from '../lib/navigationService';
+import { useAuth } from '../lib/AuthContext'; // Importamos useAuth para acceder al contexto centralizado
 
 export default function Layout({ children }) {
   const router = useRouter();
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // Reemplazamos la gestión local de usuario con el contexto centralizado
+  const { user, loading } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
 
-  // Optimización del useEffect para evitar múltiples ejecuciones o bucles
+  // Eliminamos el useEffect que manejaba la autenticación
+  // y mantenemos solo el efecto para cerrar el menú al cambiar de ruta
   useEffect(() => {
-    let isMounted = true; // Para evitar actualizar estados en componentes desmontados
-    
-    const getUser = async () => {
-      try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        
-        if (error) {
-          console.error('Error al verificar sesión:', error);
-          return;
-        }
-        
-        // Solo actualizar el estado si el componente sigue montado
-        if (isMounted) {
-          setUser(session?.user || null);
-          setLoading(false);
-        }
-        
-        // Suscribirse a cambios en la autenticación
-        const { data: authListener } = supabase.auth.onAuthStateChange(
-          (event, newSession) => {
-            // Solo actualizar el estado si el componente sigue montado
-            if (isMounted) {
-              setUser(newSession?.user || null);
-            }
-          }
-        );
-        
-        // Limpieza de suscripción al desmontar
-        return () => {
-          if (authListener && authListener.subscription) {
-            authListener.subscription.unsubscribe();
-          }
-        };
-      } catch (e) {
-        console.error('Error en getUser:', e);
-        if (isMounted) {
-          setLoading(false);
-        }
-      }
-    };
-
-    getUser();
-    
-    // Función de limpieza para evitar actualizaciones en componente desmontado
-    return () => {
-      isMounted = false;
-    };
-  }, []); // Sin dependencias para evitar múltiples ejecuciones
+    setMenuOpen(false);
+  }, [router.pathname]);
 
   const handleSignOut = async () => {
     try {
@@ -70,11 +25,6 @@ export default function Layout({ children }) {
       console.error('Error al cerrar sesión:', error);
     }
   };
-
-  // Cerrar menú móvil al cambiar de ruta
-  useEffect(() => {
-    setMenuOpen(false);
-  }, [router.pathname]);
 
   return (
     <div className="min-h-screen flex flex-col">

@@ -1,58 +1,58 @@
 // pages/reserva/[id].js
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/router';
+// pages/reserva/[id].js
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import { navigateTo } from '../../lib/navigationService';
+import { useAuth } from '../../lib/AuthContext'; // Contexto centralizado de auth
+
+// Hook personalizado para obtener parámetros de ruta
+function useParams() {
+  if (typeof window === 'undefined') {
+    return { query: {} };
+  }
+  const router = require('next/router').useRouter();
+  return router.query || {};
+}
 
 export default function DetalleReservacion() {
-  const router = useRouter();
-  const { id } = router.query;
-  
+  // Estados para manejar la carga y datos
   const [loading, setLoading] = useState(true);
   const [reservacion, setReservacion] = useState(null);
-  const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
+  const [procesando, setProcesando] = useState(false);
+  
+  // Obtener el ID de la reservación de la URL
+  const { id } = useParams();
+  
+  // Usar contexto de autenticación centralizado
+  const { user, loading: authLoading } = useAuth();
 
-  // Verificar autenticación y cargar datos
-  useEffect(() => {
-    // Solo ejecutar si id está disponible
-    if (!id) return;
-    
-    const checkAuth = async () => {
-      try {
-        // Verificar sesión del usuario
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (!session) {
-          console.log('No hay sesión activa, redirigiendo a login');
-          toast.error('Debes iniciar sesión para ver los detalles de la reservación');
-          navigateTo(`/login?redirect=${encodeURIComponent(`/reserva/${id}`)}`);
-          return;
-        }
-        
-        setUser(session.user);
-        // Una vez que tenemos el usuario, cargar los datos
-        fetchData(session.user);
-      } catch (error) {
-        console.error('Error al verificar autenticación:', error);
-        setError('Error al verificar sesión');
-        setLoading(false);
-      }
-    };
+  // Funciones utilitarias memoizadas
+  const formatFecha = useCallback((fechaStr) => {
+    return new Date(fechaStr).toLocaleDateString('es-EC', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
+    });
+  }, []);
 
-    checkAuth();
-  }, [id, router]);
+  const formatHora = useCallback((horaStr) => {
+    if (!horaStr) return '';
+    return horaStr.substring(0, 5);
+  }, []);
 
-  // Cargar datos de la reservación
-  const fetchData = async (currentUser) => {
-    if (!currentUser || !id) return;
+  // Función para cargar datos de reservación - definida fuera del efecto para reutilización
+  const loadReservationData = useCallback(async () => {
+    if (!user || !id) return;
     
     try {
+      setLoading(true);
       console.log(`Cargando detalles para reservación: ${id}`);
       
-      // Cargar directamente todos los datos de la reservación
+      // Cargar directamente todos los datos de la reservación con joins
       const { data, error } = await supabase
         .from('reservaciones')
         .select(`
@@ -112,25 +112,24 @@ export default function DetalleReservacion() {
       }
       
       // Verificar que la reservación pertenece al usuario actual
-      const reservacionUserId = String(data.usuario_id);
-      const currentUserId = String(currentUser.id);
-      
-      if (reservacionUserId !== currentUserId) {
-        console.error(`La reservación pertenece a ${reservacionUserId}, no a ${currentUserId}`);
+      if (data.usuario_id !== user.id) {
+        console.error(`La reservación pertenece a ${data.usuario_id}, no a ${user.id}`);
         setError('No tienes permiso para ver esta reservación');
         setLoading(false);
         return;
       }
       
-      console.log(`Datos completos cargados para reservación: ${data.reference_code}`);
+      console.log(`Datos cargados para reservación: ${data.reference_code}`);
       setReservacion(data);
       
       // Verificación adicional para sincronizar estado de pago
+      // Solo si es necesario y no causará recargas innecesarias
       if (data.estado === 'Confirmada' && data.pagos && data.pagos.length > 0) {
         const pago = data.pagos[0];
         // Si la reservación está confirmada pero el pago no está marcado como aprobado
         if (pago.estado !== 'Aprobado') {
           console.log('Sincronizando estado de pago con reservación confirmada');
+          
           // Actualizar el estado del pago a Aprobado
           const { error: updateError } = await supabase
             .from('pagos')
@@ -143,9 +142,14 @@ export default function DetalleReservacion() {
           if (updateError) {
             console.error('Error al actualizar estado de pago:', updateError);
           } else {
-            // Actualizar el pago en los datos de la reservación
-            data.pagos[0].estado = 'Aprobado';
-            console.log('Estado de pago actualizado a Aprobado');
+            // Actualizar el pago en los datos locales
+            setReservacion({
+              ...data,
+              pagos: [{
+                ...pago,
+                estado: 'Aprobado'
+              }]
+            });
           }
         }
       }
@@ -155,51 +159,43 @@ export default function DetalleReservacion() {
       console.error('Error al cargar datos:', error);
       setError(error.message || 'Error al cargar información de la reservación');
       setLoading(false);
-      toast.error(error.message || 'Error al cargar información de la reservación');
+      toast.error('Error al cargar información de la reservación');
     }
-  };
+  }, [id, user]);
 
-  const formatFecha = (fechaStr) => {
-    return new Date(fechaStr).toLocaleDateString('es-EC', {
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric'
-    });
-  };
-
-  const formatHora = (horaStr) => {
-    if (!horaStr) return '';
-    return horaStr.substring(0, 5);
-  };
-
-  // Función para cancelar reservación
-  const cancelarReservacion = async () => {
-    if (!reservacion || !confirm('¿Estás seguro de cancelar esta reservación?')) return;
+  // Función para cancelar reservación - memoizada para evitar recreaciones
+  const cancelarReservacion = useCallback(async () => {
+    if (!reservacion || procesando) return;
+    
+    if (!confirm('¿Estás seguro de cancelar esta reservación?')) return;
 
     try {
+      setProcesando(true);
+      
       const { error } = await supabase
         .from('reservaciones')
         .update({ 
           estado: 'Cancelada',
-          updated_at: new Date().toISOString() // Actualizar timestamp
+          updated_at: new Date().toISOString()
         })
         .eq('id', reservacion.id);
 
       if (error) throw error;
 
-      // Actualizar la reservación en el estado
+      // Actualizar la reservación en el estado local
       setReservacion(prev => ({ ...prev, estado: 'Cancelada' }));
       
       toast.success('Reservación cancelada correctamente');
     } catch (error) {
       console.error('Error al cancelar reservación:', error);
       toast.error('Error al cancelar la reservación');
+    } finally {
+      setProcesando(false);
     }
-  };
+  }, [reservacion, procesando]);
 
-  // Renderizar estado de la reservación con el color adecuado
-  const renderEstadoReservacion = (estado) => {
+  // Función para renderizar el estado de la reservación con el color adecuado
+  const renderEstadoReservacion = useCallback((estado) => {
     let statusColor, statusText;
     
     switch (estado) {
@@ -225,42 +221,67 @@ export default function DetalleReservacion() {
         {statusText}
       </span>
     );
-  };
+  }, []);
 
-  // Renderizar contenido
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4">Cargando información de la reservación...</p>
-        </div>
+  // Efecto para cargar datos de la reservación
+  useEffect(() => {
+    // Solo ejecutar si id está disponible y tenemos información de autenticación
+    if (!id || authLoading) return;
+
+    // Si no hay usuario después de verificar autenticación, redirigir a login
+    if (!user && !authLoading) {
+      toast.error('Debes iniciar sesión para ver los detalles de la reservación');
+      navigateTo(`/login?redirect=${encodeURIComponent(`/reserva/${id}`)}`);
+      return;
+    }
+
+    // Cargar datos de la reservación
+    loadReservationData();
+  }, [id, user, authLoading, loadReservationData]);
+
+  // Componentes de estado memoizados
+  const loadingContent = useMemo(() => (
+    <div className="flex justify-center items-center h-64">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+        <p className="mt-4">Cargando información de la reservación...</p>
       </div>
-    );
+    </div>
+  ), []);
+
+  const errorContent = useMemo(() => (
+    <div className="max-w-4xl mx-auto text-center py-10">
+      <h2 className="text-2xl font-bold mb-4">Error</h2>
+      <p className="mb-4 text-red-500">{error}</p>
+      <Link href="/reservaciones" className="text-primary hover:underline">
+        Ver mis reservaciones
+      </Link>
+    </div>
+  ), [error]);
+
+  const notFoundContent = useMemo(() => (
+    <div className="max-w-4xl mx-auto text-center py-10">
+      <h2 className="text-2xl font-bold mb-4">Reservación no encontrada</h2>
+      <p className="mb-4">La reservación solicitada no existe o no tienes permiso para verla.</p>
+      <Link href="/reservaciones" className="text-primary hover:underline">
+        Ver mis reservaciones
+      </Link>
+    </div>
+  ), []);
+
+  // Mostrar pantalla de carga mientras se verifica autenticación
+  if (authLoading || loading) {
+    return loadingContent;
   }
 
+  // Mostrar error si ocurrió alguno
   if (error) {
-    return (
-      <div className="max-w-4xl mx-auto text-center py-10">
-        <h2 className="text-2xl font-bold mb-4">Error</h2>
-        <p className="mb-4 text-red-500">{error}</p>
-        <Link href="/reservaciones" className="text-primary hover:underline">
-          Ver mis reservaciones
-        </Link>
-      </div>
-    );
+    return errorContent;
   }
 
+  // Mostrar mensaje si no se encontró la reservación
   if (!reservacion) {
-    return (
-      <div className="max-w-4xl mx-auto text-center py-10">
-        <h2 className="text-2xl font-bold mb-4">Reservación no encontrada</h2>
-        <p className="mb-4">La reservación solicitada no existe o no tienes permiso para verla.</p>
-        <Link href="/reservaciones" className="text-primary hover:underline">
-          Ver mis reservaciones
-        </Link>
-      </div>
-    );
+    return notFoundContent;
   }
 
   return (
@@ -386,9 +407,10 @@ export default function DetalleReservacion() {
               {reservacion.estado === 'Pendiente' && (
                 <button
                   onClick={cancelarReservacion}
-                  className="text-red-600 hover:underline"
+                  disabled={procesando}
+                  className="text-red-600 hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Cancelar reservación
+                  {procesando ? 'Cancelando...' : 'Cancelar reservación'}
                 </button>
               )}
             </div>

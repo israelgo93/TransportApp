@@ -1,48 +1,34 @@
 // pages/reservaciones.js
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import { navigateTo } from '../lib/navigationService';
+import { useAuth } from '../lib/AuthContext'; // Importamos useAuth para acceder al contexto centralizado
 
 export default function Reservaciones() {
   const [loading, setLoading] = useState(true);
   const [reservaciones, setReservaciones] = useState([]);
-  const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
+  
+  // Usamos el hook de autenticación centralizado
+  const { user, loading: authLoading } = useAuth();
 
-  // Verificar autenticación al cargar el componente
+  // Efecto para verificar autenticación y cargar datos
   useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        console.log('Verificando autenticación...');
-        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
-        
-        if (sessionError) {
-          throw sessionError;
-        }
-        
-        if (!session) {
-          console.log('No hay sesión activa, redirigiendo a login');
-          toast.error('Debes iniciar sesión para ver tus reservaciones');
-          navigateTo('/login?redirect=/reservaciones');
-          return;
-        }
-        
-        console.log(`Usuario autenticado: ${session.user.id}`);
-        setUser(session.user);
-        // Cargar reservaciones una vez que tenemos el usuario
-        fetchReservaciones(session.user.id);
-      } catch (error) {
-        console.error('Error de autenticación:', error);
-        setError('Error al verificar la sesión');
-        toast.error('Error al verificar la sesión');
-        navigateTo('/login');
-      }
-    };
-
-    checkAuth();
-  }, []);
+    // Solo proceder si la carga de autenticación está completa
+    if (authLoading) return;
+    
+    // Si no hay usuario autenticado, redirigir a login
+    if (!user) {
+      toast.error('Debes iniciar sesión para ver tus reservaciones');
+      navigateTo('/login?redirect=/reservaciones');
+      return;
+    }
+    
+    // Si hay usuario, cargar sus reservaciones
+    fetchReservaciones(user.id);
+  }, [user, authLoading]); // Dependencias correctas
 
   // Cargar reservaciones del usuario
   const fetchReservaciones = async (userId) => {
@@ -113,8 +99,8 @@ export default function Reservaciones() {
     }
   };
 
-  // Formatear estado con color adecuado
-  const getEstadoDisplay = (estado) => {
+  // Definición de EstadoDisplay fuera del useMemo para resolver el error de display name
+  function EstadoDisplay(estado) {
     switch (estado) {
       case 'Confirmada':
         return (
@@ -141,32 +127,55 @@ export default function Reservaciones() {
           </span>
         );
     }
-  };
+  }
+  
+  // Ahora usando la función definida previamente
+  EstadoDisplay.displayName = 'EstadoDisplay';
+  const getEstadoDisplay = useMemo(() => EstadoDisplay, []);
 
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4">Cargando tus reservaciones...</p>
-        </div>
+  // Contenido de carga memoizado para evitar recreaciones innecesarias
+  const loadingContent = useMemo(() => (
+    <div className="flex justify-center items-center h-64">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+        <p className="mt-4">Cargando tus reservaciones...</p>
       </div>
-    );
+    </div>
+  ), []);
+
+  // Contenido de error memoizado
+  const errorContent = useMemo(() => (
+    <div className="max-w-4xl mx-auto">
+      <div className="bg-red-100 p-4 rounded-lg text-red-700 mb-4">
+        <p>{error}</p>
+      </div>
+      <div className="flex justify-center">
+        <Link href="/" className="text-primary hover:underline">
+          Volver al inicio
+        </Link>
+      </div>
+    </div>
+  ), [error]);
+
+  // Mostrar cargando mientras se verifica la autenticación
+  if (authLoading) {
+    return loadingContent;
   }
 
+  // Si no hay usuario después de cargar la autenticación, no mostrar nada
+  // (la redirección ya se habrá iniciado en el useEffect)
+  if (!user) {
+    return null;
+  }
+
+  // Mostrar cargando mientras se obtienen las reservaciones
+  if (loading) {
+    return loadingContent;
+  }
+
+  // Mostrar error si ocurrió alguno
   if (error) {
-    return (
-      <div className="max-w-4xl mx-auto">
-        <div className="bg-red-100 p-4 rounded-lg text-red-700 mb-4">
-          <p>{error}</p>
-        </div>
-        <div className="flex justify-center">
-          <Link href="/" className="text-primary hover:underline">
-            Volver al inicio
-          </Link>
-        </div>
-      </div>
-    );
+    return errorContent;
   }
 
   return (

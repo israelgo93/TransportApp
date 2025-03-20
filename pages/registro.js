@@ -1,19 +1,33 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 import { supabase } from '../lib/supabase';
 import { useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
 import { navigateTo } from '../lib/navigationService';
+import { useAuth } from '../lib/AuthContext'; // Importamos useAuth para acceder al contexto centralizado
 
 export default function Registro() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
+  // Obtenemos referencia al usuario del contexto centralizado
+  const { user } = useAuth();
   
   const { register, handleSubmit, formState: { errors }, watch } = useForm();
   const password = watch('password');
 
+  // Redirigir si el usuario ya está autenticado
+  useEffect(() => {
+    if (user) {
+      // Usamos setTimeout para evitar conflictos con el ciclo de renderizado
+      setTimeout(() => navigateTo('/'), 0);
+    }
+  }, [user]);
+
   const onSubmit = async (data) => {
+    // Prevenir envíos múltiples
+    if (isLoading) return;
+    
     setIsLoading(true);
     
     try {
@@ -87,7 +101,9 @@ export default function Registro() {
       }
 
       toast.success('Registro exitoso. Verifica tu correo electrónico.');
-      navigateTo('/login');
+      
+      // Redirigir después de un éxito (con breve retraso para mostrar el toast)
+      setTimeout(() => navigateTo('/login'), 1500);
     } catch (error) {
       console.error('Error al registrar:', error);
       
@@ -117,6 +133,7 @@ export default function Registro() {
                 type="text"
                 {...register('nombre', { required: 'El nombre es requerido' })}
                 className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary focus:border-transparent"
+                disabled={isLoading}
               />
               {errors.nombre && (
                 <p className="text-red-500 text-sm mt-1">{errors.nombre.message}</p>
@@ -129,6 +146,7 @@ export default function Registro() {
                 type="text"
                 {...register('apellido', { required: 'El apellido es requerido' })}
                 className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary focus:border-transparent"
+                disabled={isLoading}
               />
               {errors.apellido && (
                 <p className="text-red-500 text-sm mt-1">{errors.apellido.message}</p>
@@ -148,6 +166,7 @@ export default function Registro() {
                 }
               })}
               className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary focus:border-transparent"
+              disabled={isLoading}
             />
             {errors.email && (
               <p className="text-red-500 text-sm mt-1">{errors.email.message}</p>
@@ -166,6 +185,7 @@ export default function Registro() {
                 }
               })}
               className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary focus:border-transparent"
+              disabled={isLoading}
             />
             {errors.cedula && (
               <p className="text-red-500 text-sm mt-1">{errors.cedula.message}</p>
@@ -184,6 +204,7 @@ export default function Registro() {
                 }
               })}
               className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary focus:border-transparent"
+              disabled={isLoading}
             />
             {errors.telefono && (
               <p className="text-red-500 text-sm mt-1">{errors.telefono.message}</p>
@@ -202,6 +223,7 @@ export default function Registro() {
                 }
               })}
               className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary focus:border-transparent"
+              disabled={isLoading}
             />
             {errors.password && (
               <p className="text-red-500 text-sm mt-1">{errors.password.message}</p>
@@ -217,6 +239,7 @@ export default function Registro() {
                 validate: value => value === password || 'Las contraseñas no coinciden'
               })}
               className="w-full p-2 border border-gray-300 rounded focus:ring-2 focus:ring-primary focus:border-transparent"
+              disabled={isLoading}
             />
             {errors.confirmPassword && (
               <p className="text-red-500 text-sm mt-1">{errors.confirmPassword.message}</p>

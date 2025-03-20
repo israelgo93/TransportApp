@@ -2,10 +2,17 @@
 import { getPaymentStatus } from '../../lib/placeToPay';
 import { supabase } from '../../lib/supabase';
 
+// Cache para evitar verificaciones duplicadas en corto tiempo
+const statusCheckCache = new Map();
+const CACHE_TTL = 30000; // 30 segundos
+
 export default async function handler(req, res) {
   // Solo permitir solicitudes POST
   if (req.method !== 'POST') {
-    return res.status(405).json({ message: 'Method not allowed' });
+    return res.status(405).json({ 
+      success: false,
+      message: 'Method not allowed' 
+    });
   }
 
   try {
@@ -13,40 +20,51 @@ export default async function handler(req, res) {
     
     if (!reservacionId) {
       return res.status(400).json({ 
+        success: false,
         message: 'Datos incompletos. Se requiere al menos reservacionId.' 
       });
     }
 
     console.log(`Procesando verificación de pago para reservación: ${reservacionId}`);
-    if (requestId) {
-      console.log(`RequestId proporcionado: ${requestId}`);
+    
+    // 1. Verificar cache para evitar solicitudes duplicadas
+    const cacheKey = `${reservacionId}-${requestId || 'no-req'}`;
+    const cachedResult = statusCheckCache.get(cacheKey);
+    
+    if (cachedResult && (Date.now() - cachedResult.timestamp < CACHE_TTL)) {
+      console.log(`Usando resultado en caché para ${cacheKey} (${Date.now() - cachedResult.timestamp}ms)`);
+      return res.status(200).json(cachedResult.data);
     }
 
-    // Verificar que la reservación existe - SIN JOIN
+    // 2. Verificar que la reservación existe - SIN JOIN para minimizar carga
     let reservacion;
     try {
       const { data, error } = await supabase
         .from('reservaciones')
-        .select('*')  // Sin hacer join con usuario_id
+        .select('id, estado, reference_code, usuario_id')
         .eq('id', reservacionId)
         .maybeSingle();
 
       if (error) throw error;
       if (!data) {
         console.log(`Reservación no encontrada con id: ${reservacionId}`);
-        return res.status(404).json({ message: 'Reservación no encontrada' });
+        return res.status(404).json({ 
+          success: false,
+          message: 'Reservación no encontrada' 
+        });
       }
       
       reservacion = data;
-      console.log(`Reservación encontrada: ${reservacion.reference_code}, estado actual: ${reservacion.estado}, usuario_id: ${reservacion.usuario_id}`);
-      
-      // La verificación de propiedad ya está garantizada por las políticas RLS de Supabase
+      console.log(`Reservación encontrada: ${reservacion.reference_code}, estado: ${reservacion.estado}`);
     } catch (error) {
       console.error('Error obteniendo reservación:', error);
-      return res.status(500).json({ message: 'Error al obtener la reservación' });
+      return res.status(500).json({ 
+        success: false, 
+        message: 'Error al obtener la reservación' 
+      });
     }
 
-    // Obtener el pago asociado específicamente por reservacion_id
+    // 3. Obtener el pago asociado por reservacion_id
     let currentPago;
     try {
       const { data, error } = await supabase
@@ -61,7 +79,32 @@ export default async function handler(req, res) {
       
       if (data) {
         currentPago = data;
-        console.log(`Pago encontrado, id: ${currentPago.id}, estado actual: ${currentPago.estado}, place_to_pay_id: ${currentPago.place_to_pay_id || 'no asignado'}`);
+        console.log(`Pago encontrado, id: ${currentPago.id}, estado actual: ${currentPago.estado}`);
+        
+        // Si el pago ya está en estado final y tenemos datos completos, no necesitamos consultar a PlaceToPay
+        if ((currentPago.estado === 'Aprobado' || currentPago.estado === 'Rechazado') && 
+            currentPago.datos_pago && currentPago.datos_pago.status) {
+          
+          // Crear respuesta para retornar directamente
+          const quickResponse = {
+            success: true,
+            paymentStatus: {
+              status: currentPago.datos_pago.status
+            },
+            pago: currentPago,
+            reservacion,
+            fromCache: false
+          };
+          
+          // Almacenar en caché
+          statusCheckCache.set(cacheKey, {
+            timestamp: Date.now(),
+            data: quickResponse
+          });
+          
+          console.log(`Retornando datos existentes sin consultar PlaceToPay (estado: ${currentPago.estado})`);
+          return res.status(200).json(quickResponse);
+        }
       } else {
         // Si no existe un pago, lo creamos vinculado a esta reservación
         console.log('No existe pago para esta reservación, creando uno nuevo...');
@@ -74,7 +117,10 @@ export default async function handler(req, res) {
           
         if (detallesError) {
           console.error('Error obteniendo detalles de reservación:', detallesError);
-          return res.status(500).json({ message: 'Error obteniendo detalles de reservación' });
+          return res.status(500).json({ 
+            success: false,
+            message: 'Error obteniendo detalles de reservación' 
+          });
         }
         
         const montoTotal = detalles.reduce((sum, detalle) => sum + (detalle.precio || 0), 0);
@@ -82,7 +128,7 @@ export default async function handler(req, res) {
         const { data: nuevoPago, error: nuevoPagoError } = await supabase
           .from('pagos')
           .insert([{
-            reservacion_id: reservacionId,  // Clave foránea a la reservación
+            reservacion_id: reservacionId,
             place_to_pay_id: requestId ? String(requestId) : null,
             monto: montoTotal || 0,
             estado: 'Pendiente',
@@ -94,7 +140,10 @@ export default async function handler(req, res) {
           
         if (nuevoPagoError) {
           console.error('Error creando nuevo pago:', nuevoPagoError);
-          return res.status(500).json({ message: 'Error al crear registro de pago' });
+          return res.status(500).json({ 
+            success: false,
+            message: 'Error al crear registro de pago' 
+          });
         }
         
         console.log('Nuevo pago creado con ID:', nuevoPago.id);
@@ -102,10 +151,13 @@ export default async function handler(req, res) {
       }
     } catch (error) {
       console.error('Error al procesar pago:', error);
-      return res.status(500).json({ message: 'Error al procesar información de pago' });
+      return res.status(500).json({ 
+        success: false,
+        message: 'Error al procesar información de pago' 
+      });
     }
 
-    // Obtener el requestId para consultar a PlaceToPay
+    // 4. Determinar el requestId efectivo para consultar a PlaceToPay
     let effectiveRequestId = requestId;
     
     // Si no se proporcionó requestId, intentamos obtenerlo del pago
@@ -120,13 +172,15 @@ export default async function handler(req, res) {
       console.log(`Usando requestId de datos_pago: ${effectiveRequestId}`);
     }
     
-    // Si no tenemos requestId para consultar, verificamos si ya está aprobado en la BD
+    // 5. Si no tenemos requestId para consultar, verificamos si ya está aprobado en la BD
     if (!effectiveRequestId) {
       console.log('No hay requestId disponible, verificando estado en base de datos');
       
+      // Si el pago ya está aprobado, retornar este estado
       if (currentPago.estado === 'Aprobado') {
         console.log('Pago ya está marcado como aprobado en la base de datos');
-        return res.status(200).json({
+        
+        const approvedResponse = {
           success: true,
           paymentStatus: {
             status: {
@@ -135,12 +189,20 @@ export default async function handler(req, res) {
             }
           },
           pago: currentPago,
-          reservacion: reservacion
+          reservacion
+        };
+        
+        // Almacenar en caché
+        statusCheckCache.set(cacheKey, {
+          timestamp: Date.now(),
+          data: approvedResponse
         });
+        
+        return res.status(200).json(approvedResponse);
       }
       
-      // Si el pago no está aprobado y no tenemos requestId, devolver información de estado pendiente
-      return res.status(200).json({
+      // Si el pago no está aprobado y no tenemos requestId, retornar estado pendiente
+      const pendingResponse = {
         success: false,
         paymentStatus: {
           status: {
@@ -149,132 +211,132 @@ export default async function handler(req, res) {
           }
         },
         pago: currentPago,
-        reservacion: reservacion
+        reservacion
+      };
+      
+      // Almacenar en caché por un período más corto (10 segundos)
+      statusCheckCache.set(cacheKey, {
+        timestamp: Date.now(),
+        data: pendingResponse,
+        shorterTTL: true
       });
+      
+      return res.status(200).json(pendingResponse);
     }
 
-    // Consultar estado en PlaceToPay
+    // 6. Consultar estado en PlaceToPay
     try {
       console.log(`Consultando estado en PlaceToPay para requestId: ${effectiveRequestId}`);
       const response = await getPaymentStatus(effectiveRequestId);
-      console.log('Respuesta de PlaceToPay:', JSON.stringify(response, null, 2));
       
-      // Determinación mejorada del estado
+      // Determinación optimizada del estado
       let paymentStatus = 'PENDING'; // Estado por defecto
       let statusMessage = '';
       
-      // 1. Revisar en la raíz del objeto
+      // Extraer estado del objeto de respuesta
       if (response.status && response.status.status) {
         paymentStatus = response.status.status;
         statusMessage = response.status.message || '';
-        console.log(`Estado encontrado en response.status: ${paymentStatus}`);
-      }
-      
-      // 2. Revisar en el objeto payment si existe
-      if (response.payment) {
+      } else if (response.payment) {
         if (Array.isArray(response.payment) && response.payment.length > 0) {
-          // Si hay transacciones, revisamos la más reciente
           const latestPayment = response.payment[0];
           if (latestPayment.status && latestPayment.status.status) {
             paymentStatus = latestPayment.status.status;
             statusMessage = latestPayment.status.message || '';
-            console.log(`Estado actualizado desde payment[0]: ${paymentStatus}`);
           }
         } else if (response.payment.status && response.payment.status.status) {
-          // Si payment no es un array pero tiene un status
           paymentStatus = response.payment.status.status;
           statusMessage = response.payment.status.message || '';
-          console.log(`Estado actualizado desde payment: ${paymentStatus}`);
         }
       }
       
-      console.log(`Estado final determinado: ${paymentStatus}, mensaje: ${statusMessage}`);
+      console.log(`Estado determinado: ${paymentStatus}, mensaje: ${statusMessage}`);
       
-      // Mapeo de estado y actualización en la base de datos
+      // 7. Mapeo de estado y actualización en la base de datos
       let dbStatus;
       let reservacionStatus;
       
       switch (paymentStatus) {
         case 'APPROVED':
-        case 'APPROVED_PARTIAL': // Añadido para manejar pagos parciales aprobados
+        case 'APPROVED_PARTIAL':
           dbStatus = 'Aprobado';
           reservacionStatus = 'Confirmada';
           break;
         case 'REJECTED':
-        case 'REJECTED_PARTIAL': // Añadido para manejar pagos parciales rechazados
+        case 'REJECTED_PARTIAL':
           dbStatus = 'Rechazado';
           reservacionStatus = 'Cancelada';
           break;
-        case 'PENDING_VALIDATION':
-        case 'PENDING':
         default:
           dbStatus = 'Pendiente';
           reservacionStatus = 'Pendiente';
       }
       
-      console.log(`Actualizando en BD - Estado pago: ${dbStatus}, Estado reservación: ${reservacionStatus}`);
+      // Optimización: Actualizar solo si es necesario
+      const needsUpdate = currentPago.estado !== dbStatus;
+      console.log(`¿Necesita actualización? ${needsUpdate ? 'Sí' : 'No'} (${currentPago.estado} -> ${dbStatus})`);
       
-      // Si no teníamos place_to_pay_id guardado, actualizarlo ahora
+      // 8. Si no teníamos place_to_pay_id guardado, actualizarlo ahora
       if (!currentPago.place_to_pay_id && effectiveRequestId) {
         console.log(`Actualizando place_to_pay_id a ${effectiveRequestId}`);
         
         try {
-          const { data, error } = await supabase
+          const { error } = await supabase
             .from('pagos')
-            .update({ place_to_pay_id: String(effectiveRequestId) })
-            .eq('id', currentPago.id)
-            .select();
+            .update({ 
+              place_to_pay_id: String(effectiveRequestId),
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', currentPago.id);
             
           if (error) {
             console.error('Error actualizando place_to_pay_id:', error);
           } else {
-            console.log('place_to_pay_id actualizado correctamente');
             currentPago.place_to_pay_id = String(effectiveRequestId);
           }
         } catch (updateError) {
-          console.error('Error en la actualización de place_to_pay_id:', updateError);
+          console.error('Error en actualización de place_to_pay_id:', updateError);
         }
       }
       
-      // Actualizar el pago con los nuevos datos
+      // 9. Actualizar el pago solo si es necesario
       let updatedPago = currentPago;
-      try {
-        const { data, error } = await supabase
-          .from('pagos')
-          .update({
-            estado: dbStatus,
-            datos_pago: response,
-            updated_at: new Date().toISOString() // Forzar actualización de timestamp
-          })
-          .eq('id', currentPago.id)
-          .select()
-          .maybeSingle();
-        
-        if (error) {
-          console.error('Error actualizando pago:', error);
-          throw new Error(`Error al actualizar pago: ${error.message}`);
+      if (needsUpdate) {
+        try {
+          const { data, error } = await supabase
+            .from('pagos')
+            .update({
+              estado: dbStatus,
+              datos_pago: response,
+              updated_at: new Date().toISOString()
+            })
+            .eq('id', currentPago.id)
+            .select()
+            .maybeSingle();
+          
+          if (error) {
+            console.error('Error actualizando pago:', error);
+            throw new Error(`Error al actualizar pago: ${error.message}`);
+          }
+          
+          if (data) {
+            updatedPago = data;
+            console.log(`Pago actualizado correctamente a: ${updatedPago.estado}`);
+          }
+        } catch (updateError) {
+          console.error('Error en actualización de pago:', updateError);
         }
-        
-        if (data) {
-          updatedPago = data;
-          console.log(`Pago actualizado correctamente, nuevo estado: ${updatedPago.estado}`);
-        } else {
-          console.log('No se recibieron datos actualizados del pago, usando datos anteriores');
-        }
-      } catch (updateError) {
-        console.error('Error en la actualización del pago:', updateError);
-        // Continuamos con el pago actual
       }
       
-      // Actualizar la reservación si es necesario
+      // 10. Actualizar la reservación si es necesario (solo si cambió el estado)
       let updatedReservacion = reservacion;
-      if (reservacion.estado !== reservacionStatus) {
+      if (needsUpdate && reservacion.estado !== reservacionStatus) {
         try {
           const { data, error } = await supabase
             .from('reservaciones')
             .update({ 
               estado: reservacionStatus,
-              updated_at: new Date().toISOString() // Forzar actualización de timestamp
+              updated_at: new Date().toISOString()
             })
             .eq('id', reservacionId)
             .select()
@@ -287,20 +349,15 @@ export default async function handler(req, res) {
           
           if (data) {
             updatedReservacion = data;
-            console.log(`Reservación actualizada correctamente, nuevo estado: ${updatedReservacion.estado}`);
-          } else {
-            console.log('No se recibieron datos actualizados de la reservación, usando datos anteriores');
+            console.log(`Reservación actualizada correctamente a: ${updatedReservacion.estado}`);
           }
         } catch (updateError) {
-          console.error('Error en la actualización de la reservación:', updateError);
-          // Continuamos con la reservación actual
+          console.error('Error en actualización de reservación:', updateError);
         }
-      } else {
-        console.log(`No es necesario actualizar el estado de la reservación, se mantiene como: ${reservacion.estado}`);
       }
       
-      // Devolver respuesta con toda la información
-      return res.status(200).json({
+      // 11. Construir y retornar respuesta
+      const finalResponse = {
         success: true,
         paymentStatus: {
           status: {
@@ -310,26 +367,45 @@ export default async function handler(req, res) {
         },
         pago: updatedPago,
         reservacion: updatedReservacion
+      };
+      
+      // Almacenar en caché
+      statusCheckCache.set(cacheKey, {
+        timestamp: Date.now(),
+        data: finalResponse
       });
+      
+      return res.status(200).json(finalResponse);
     } catch (ptpError) {
       console.error('Error al consultar PlaceToPay:', ptpError);
       
-      // Si falla la consulta a PlaceToPay, intentamos usar los datos que ya tenemos
+      // Si falla la consulta a PlaceToPay, intentar usar datos existentes
       if (currentPago.datos_pago && currentPago.datos_pago.status) {
-        console.log('Usando datos de pago almacenados:', currentPago.datos_pago);
+        console.log('Usando datos de pago almacenados como fallback');
         
-        return res.status(200).json({
+        const fallbackResponse = {
           success: true,
           paymentStatus: {
             status: currentPago.datos_pago.status
           },
           pago: currentPago,
-          reservacion: reservacion,
+          reservacion,
           fromCache: true
+        };
+        
+        // Almacenar en caché por un período más corto
+        statusCheckCache.set(cacheKey, {
+          timestamp: Date.now(),
+          data: fallbackResponse,
+          shorterTTL: true
         });
+        
+        return res.status(200).json(fallbackResponse);
       }
       
+      // Si no tenemos datos, retornar error
       return res.status(500).json({ 
+        success: false,
         message: 'Error al consultar estado de pago en PlaceToPay',
         error: ptpError.message
       });
@@ -337,8 +413,22 @@ export default async function handler(req, res) {
   } catch (error) {
     console.error('Error al verificar estado de pago:', error);
     return res.status(500).json({ 
+      success: false,
       message: 'Error al verificar el estado del pago',
       error: error.message
     });
   }
+}
+
+// Limpiar caché antigua cada minuto
+if (typeof setInterval !== 'undefined') {
+  setInterval(() => {
+    const now = Date.now();
+    statusCheckCache.forEach((value, key) => {
+      const ttl = value.shorterTTL ? CACHE_TTL / 3 : CACHE_TTL;
+      if (now - value.timestamp > ttl) {
+        statusCheckCache.delete(key);
+      }
+    });
+  }, 60000);
 }

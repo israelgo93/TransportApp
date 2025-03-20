@@ -1,45 +1,48 @@
 // pages/boleto/[id].js
-import { useState, useEffect, useRef } from 'react';
-import { useRouter } from 'next/router';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
 import toast from 'react-hot-toast';
 import QRCode from 'qrcode.react';
 import { navigateTo } from '../../lib/navigationService';
+import { useAuth } from '../../lib/AuthContext'; // Contexto centralizado de auth
 
 export default function Boleto() {
-  const router = useRouter();
-  const { id } = router.query;
   const boletoRef = useRef(null);
-  
   const [loading, setLoading] = useState(true);
   const [reservacion, setReservacion] = useState(null);
-  const [perfilUsuario, setPerfilUsuario] = useState(null);
-  const [user, setUser] = useState(null);
   const [error, setError] = useState(null);
+  
+  // Usar contexto de autenticación centralizado
+  const { user, profile, loading: authLoading } = useAuth();
+  
+  // Obtener el ID de la reservación de la URL
+  const { id } = useParams();
 
-  // Verificar autenticación y cargar datos
+  // useParams hook personalizado para obtener parámetros de ruta
+  function useParams() {
+    const router = typeof window !== 'undefined' ? 
+      require('next/router').useRouter() : { query: {} };
+    return router.query || {};
+  }
+
+  // Efecto para cargar datos de la reservación
   useEffect(() => {
-    // Solo ejecutar si id está disponible
-    if (!id) return;
+    // Solo ejecutar si id está disponible y tenemos usuario autenticado
+    if (!id || authLoading) return;
+
+    // Si no hay usuario después de verificar autenticación, redirigir a login
+    if (!user && !authLoading) {
+      toast.error('Debes iniciar sesión para ver tu boleto');
+      navigateTo(`/login?redirect=${encodeURIComponent(`/boleto/${id}`)}`);
+      return;
+    }
 
     const fetchData = async () => {
       try {
         console.log(`Iniciando carga de datos para boleto de reservación: ${id}`);
         
-        // Obtener sesión del usuario
-        const { data: { session } } = await supabase.auth.getSession();
-        
-        if (!session) {
-          toast.error('Debes iniciar sesión para ver tu boleto');
-          navigateTo(`/login?redirect=${encodeURIComponent(`/boleto/${id}`)}`);
-          return;
-        }
-        
-        setUser(session.user);
-        console.log(`Usuario autenticado: ${session.user.id}`);
-
-        // Cargar datos de la reservación SIN hacer join con usuario_id
+        // Cargar datos de la reservación SIN hacer join con usuario_id para minimizar datos
         const { data: reservacionData, error: reservacionError } = await supabase
           .from('reservaciones')
           .select(`
@@ -88,7 +91,7 @@ export default function Boleto() {
         }
         
         // Verificar que la reservación pertenece al usuario y está confirmada
-        if (reservacionData.usuario_id !== session.user.id) {
+        if (reservacionData.usuario_id !== user.id) {
           toast.error('No tienes permiso para ver este boleto');
           navigateTo('/reservaciones');
           return;
@@ -102,22 +105,6 @@ export default function Boleto() {
         
         setReservacion(reservacionData);
         console.log('Reservación cargada correctamente');
-
-        // Cargar perfil de usuario por separado
-        const { data: perfilData, error: perfilError } = await supabase
-          .from('profiles')
-          .select('nombre, apellido, cedula')
-          .eq('id', reservacionData.usuario_id)
-          .single();
-
-        if (perfilError) {
-          console.error('Error al cargar perfil:', perfilError);
-          // Continuamos aunque haya error en el perfil
-        } else {
-          setPerfilUsuario(perfilData);
-          console.log('Perfil de usuario cargado correctamente');
-        }
-        
         setLoading(false);
       } catch (error) {
         console.error('Error al cargar datos:', error);
@@ -128,28 +115,32 @@ export default function Boleto() {
     };
 
     fetchData();
-  }, [id, router]);
+  }, [id, user, authLoading]);
 
-  const formatFecha = (fechaStr) => {
+  // Formatear fecha (memoizada para evitar recálculos)
+  const formatFecha = useCallback((fechaStr) => {
     return new Date(fechaStr).toLocaleDateString('es-EC', {
       weekday: 'long',
       year: 'numeric',
       month: 'long',
       day: 'numeric'
     });
-  };
+  }, []);
 
-  const formatHora = (horaStr) => {
+  // Formatear hora (memoizada para evitar recálculos)
+  const formatHora = useCallback((horaStr) => {
     if (!horaStr) return '';
     const [hora, minuto] = horaStr.split(':');
     let h = parseInt(hora);
     const ampm = h >= 12 ? 'PM' : 'AM';
     h = h % 12 || 12; // Convertir a formato 12 horas
     return `${h}:${minuto} ${ampm}`;
-  };
+  }, []);
 
   // Imprimir boleto
-  const imprimirBoleto = () => {
+  const imprimirBoleto = useCallback(() => {
+    if (!boletoRef.current) return;
+    
     const contenido = boletoRef.current;
     const ventanaImpresion = window.open('', '_blank');
     
@@ -235,51 +226,64 @@ export default function Boleto() {
     `);
     
     ventanaImpresion.document.close();
-  };
+  }, [reservacion]);
 
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4">Cargando tu boleto...</p>
-        </div>
+  // Contenido de carga (memoizado para evitar recreaciones)
+  const loadingContent = useMemo(() => (
+    <div className="flex justify-center items-center h-64">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+        <p className="mt-4">Cargando tu boleto...</p>
       </div>
-    );
+    </div>
+  ), []);
+
+  // Contenido de error (memoizado)
+  const errorContent = useMemo(() => (
+    <div className="max-w-4xl mx-auto text-center py-10">
+      <h2 className="text-2xl font-bold mb-4">Error</h2>
+      <p className="mb-4 text-red-500">{error}</p>
+      <Link href="/reservaciones" className="text-primary hover:underline">
+        Ver mis reservaciones
+      </Link>
+    </div>
+  ), [error]);
+
+  // Contenido no encontrado (memoizado)
+  const notFoundContent = useMemo(() => (
+    <div className="max-w-4xl mx-auto text-center py-10">
+      <h2 className="text-2xl font-bold mb-4">Boleto no encontrado</h2>
+      <p className="mb-4">El boleto solicitado no existe o no tienes permiso para verlo.</p>
+      <Link href="/reservaciones" className="text-primary hover:underline">
+        Ver mis reservaciones
+      </Link>
+    </div>
+  ), []);
+
+  // Mostrar pantalla de carga mientras se verifica autenticación
+  if (authLoading || loading) {
+    return loadingContent;
   }
 
+  // Mostrar error si ocurrió alguno
   if (error) {
-    return (
-      <div className="max-w-4xl mx-auto text-center py-10">
-        <h2 className="text-2xl font-bold mb-4">Error</h2>
-        <p className="mb-4 text-red-500">{error}</p>
-        <Link href="/reservaciones" className="text-primary hover:underline">
-          Ver mis reservaciones
-        </Link>
-      </div>
-    );
+    return errorContent;
   }
 
+  // Mostrar mensaje si no se encontró la reservación
   if (!reservacion) {
-    return (
-      <div className="max-w-4xl mx-auto text-center py-10">
-        <h2 className="text-2xl font-bold mb-4">Boleto no encontrado</h2>
-        <p className="mb-4">El boleto solicitado no existe o no tienes permiso para verlo.</p>
-        <Link href="/reservaciones" className="text-primary hover:underline">
-          Ver mis reservaciones
-        </Link>
-      </div>
-    );
+    return notFoundContent;
   }
 
+  // Datos extraídos de la reservación (para mejor legibilidad)
   const horarioRuta = reservacion.horarios?.rutas || {};
   const horarioBus = reservacion.horarios?.buses || {};
   const asientos = reservacion.detalles_reservacion || [];
   
-  // Construir una URL válida para el QR que lleve a la página de detalles de reserva
+  // Construir una URL válida para el QR que lleve a la página de verificación
   const qrUrl = typeof window !== 'undefined' 
-    ? `${window.location.origin}/reserva/${reservacion.id}` 
-    : `/reserva/${reservacion.id}`;
+    ? `${window.location.origin}/verificar/${reservacion.reference_code}` 
+    : `/verificar/${reservacion.reference_code}`;
   
   return (
     <div className="max-w-4xl mx-auto">
@@ -343,10 +347,10 @@ export default function Boleto() {
           <div>
             <h3 className="font-medium border-b pb-2 mb-2">Pasajero</h3>
             <p>
-              <span className="text-gray-600">Nombre:</span> {perfilUsuario?.nombre || 'No disponible'} {perfilUsuario?.apellido || ''}
+              <span className="text-gray-600">Nombre:</span> {profile?.nombre || 'No disponible'} {profile?.apellido || ''}
             </p>
             <p>
-              <span className="text-gray-600">Cédula:</span> {perfilUsuario?.cedula || 'No disponible'}
+              <span className="text-gray-600">Cédula:</span> {profile?.cedula || 'No disponible'}
             </p>
           </div>
         </div>

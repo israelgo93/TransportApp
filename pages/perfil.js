@@ -1,88 +1,61 @@
 ///home/phiuser/phi/transporte-app/pages/perfil.js
 import { useState, useEffect } from 'react';
 import { useRouter } from 'next/router';
+import Link from 'next/link';
 import { supabase } from '../lib/supabase';
 import { useForm } from 'react-hook-form';
 import toast from 'react-hot-toast';
+import { useAuth } from '../lib/AuthContext'; // Importamos useAuth para acceder al contexto centralizado
 
 export default function Perfil() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
-  const [user, setUser] = useState(null);
-  const [perfil, setPerfil] = useState(null);
+  // Usamos el hook de autenticación centralizado
+  const { user, profile, loading, updateProfile } = useAuth();
   
   const { register, handleSubmit, setValue, reset, formState: { errors } } = useForm();
 
-  // Verificar autenticación y cargar datos del perfil
+  // Efecto para establecer valores en el formulario cuando cambia el perfil
   useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        toast.error('Debes iniciar sesión para acceder a tu perfil');
-        router.push('/login?redirect=/perfil');
-        return;
-      }
-      
-      setUser(session.user);
-      await fetchProfile(session.user.id);
-    };
-
-    checkAuth();
-  }, [router]);
-
-  // Cargar datos del perfil
-  const fetchProfile = async (userId) => {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', userId)
-        .single();
-
-      if (error) throw error;
-      
-      setPerfil(data);
-      
-      // Establecer valores en el formulario
-      setValue('nombre', data.nombre || '');
-      setValue('apellido', data.apellido || '');
-      setValue('cedula', data.cedula || '');
-      setValue('telefono', data.telefono || '');
-      
-      // IMPORTANTE: Establecer el email del usuario directamente desde session.user
-      if (user && user.email) {
-        setValue('email', user.email);
-        console.log("Email establecido:", user.email);
-      } else {
-        console.warn("No se pudo obtener el email del usuario");
-      }
-    } catch (error) {
-      console.error('Error al cargar perfil:', error);
-      toast.error('Error al cargar datos del perfil');
-    } finally {
-      setLoading(false);
+    // Solo configurar el formulario si tenemos datos de perfil
+    if (profile) {
+      setValue('nombre', profile.nombre || '');
+      setValue('apellido', profile.apellido || '');
+      setValue('cedula', profile.cedula || '');
+      setValue('telefono', profile.telefono || '');
     }
-  };
+    
+    // Establecer el email directamente desde user
+    if (user && user.email) {
+      setValue('email', user.email);
+    }
+  }, [profile, user, setValue]); // Dependencias explícitas
+
+  // Redirigir si no hay usuario autenticado
+  useEffect(() => {
+    if (!loading && !user) {
+      toast.error('Debes iniciar sesión para acceder a tu perfil');
+      router.push('/login?redirect=/perfil');
+    }
+  }, [user, loading, router]);
 
   // Manejar actualización del perfil
   const onSubmit = async (data) => {
+    // Evitar múltiples envíos
+    if (updating) return;
+    
     setUpdating(true);
     
     try {
-      // Actualizar perfil
-      const { error: profileError } = await supabase
-        .from('profiles')
-        .update({
-          nombre: data.nombre,
-          apellido: data.apellido,
-          cedula: data.cedula,
-          telefono: data.telefono
-        })
-        .eq('id', user.id);
+      // Actualizar perfil usando la función del contexto
+      const { success, error: profileError } = await updateProfile({
+        nombre: data.nombre,
+        apellido: data.apellido,
+        cedula: data.cedula,
+        telefono: data.telefono
+      });
 
-      if (profileError) throw profileError;
+      if (!success) throw profileError;
 
       // Actualizar email si ha cambiado
       if (data.email !== user.email) {
@@ -95,9 +68,6 @@ export default function Perfil() {
       }
 
       toast.success('Perfil actualizado con éxito');
-      
-      // Refrescar datos del perfil
-      await fetchProfile(user.id);
     } catch (error) {
       console.error('Error al actualizar perfil:', error);
       toast.error(error.message || 'Error al actualizar el perfil');
@@ -108,6 +78,11 @@ export default function Perfil() {
 
   // Manejar cambio de contraseña
   const handleChangePassword = async () => {
+    if (!user) {
+      toast.error('Debes iniciar sesión para cambiar tu contraseña');
+      return;
+    }
+    
     try {
       const { error } = await supabase.auth.resetPasswordForEmail(user.email, {
         redirectTo: `${window.location.origin}/reset-password`,
@@ -133,6 +108,9 @@ export default function Perfil() {
     );
   }
 
+  // Si no hay usuario después de cargar, no renderizar el contenido
+  if (!user) return null;
+
   return (
     <div className="max-w-3xl mx-auto">
       <h1 className="text-2xl font-bold mb-6">Mi Perfil</h1>
@@ -151,6 +129,7 @@ export default function Perfil() {
                   type="text"
                   {...register('nombre', { required: 'El nombre es requerido' })}
                   className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                  disabled={updating}
                 />
                 {errors.nombre && (
                   <p className="text-red-500 text-sm mt-1">{errors.nombre.message}</p>
@@ -163,6 +142,7 @@ export default function Perfil() {
                   type="text"
                   {...register('apellido', { required: 'El apellido es requerido' })}
                   className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                  disabled={updating}
                 />
                 {errors.apellido && (
                   <p className="text-red-500 text-sm mt-1">{errors.apellido.message}</p>
@@ -181,8 +161,8 @@ export default function Perfil() {
                     message: 'Correo electrónico inválido'
                   }
                 })}
-                defaultValue={user?.email || ''} // Aseguramos que se muestre el email
                 className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                disabled={updating}
               />
               {errors.email && (
                 <p className="text-red-500 text-sm mt-1">{errors.email.message}</p>
@@ -202,6 +182,7 @@ export default function Perfil() {
                     }
                   })}
                   className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                  disabled={updating}
                 />
                 {errors.cedula && (
                   <p className="text-red-500 text-sm mt-1">{errors.cedula.message}</p>
@@ -220,6 +201,7 @@ export default function Perfil() {
                     }
                   })}
                   className="w-full p-2 border border-gray-300 rounded focus:outline-none focus:ring-2 focus:ring-primary"
+                  disabled={updating}
                 />
                 {errors.telefono && (
                   <p className="text-red-500 text-sm mt-1">{errors.telefono.message}</p>
@@ -232,6 +214,7 @@ export default function Perfil() {
                 type="button"
                 onClick={handleChangePassword}
                 className="text-primary hover:underline"
+                disabled={updating}
               >
                 Cambiar contraseña
               </button>
@@ -257,12 +240,12 @@ export default function Perfil() {
           <p className="text-gray-600">Aquí podrás ver tu historial de viajes realizados.</p>
           
           <div className="mt-4">
-            <a 
+            <Link 
               href="/reservaciones" 
               className="text-primary hover:underline"
             >
               Ver historial de reservaciones
-            </a>
+            </Link>
           </div>
         </div>
       </div>

@@ -1,66 +1,154 @@
-///home/phiuser/phi/transporte-app/pages/horarios.js
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/router';
+// pages/horarios.js
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
+import { navigateTo } from '../lib/navigationService';
+import { useAuth } from '../lib/AuthContext'; // Contexto centralizado de auth
+
+// Constantes al inicio del archivo
+const CACHE_TTL = 60000; // 1 minuto
+
+// Hook personalizado para obtener parámetros de ruta
+function useParams() {
+  if (typeof window === 'undefined') {
+    return { query: {} };
+  }
+  const router = require('next/router').useRouter();
+  return router.query || {};
+}
 
 export default function Horarios() {
-  const router = useRouter();
-  const { ruta, fecha } = router.query;
-  
+  // Estados para manejar la carga y datos
   const [loading, setLoading] = useState(true);
   const [detallesRuta, setDetallesRuta] = useState(null);
   const [horarios, setHorarios] = useState([]);
-  const [user, setUser] = useState(null);
+  const [error, setError] = useState(null);
+  
+  // Obtener parámetros de la URL
+  const { ruta, fecha } = useParams();
+  
+  // Usar contexto de autenticación centralizado
+  const { user, loading: authLoading } = useAuth();
 
-  // Obtener el usuario actual
-  useEffect(() => {
-    const fetchUser = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      setUser(session?.user || null);
-    };
+  // Cache para evitar recalcular disponibilidad frecuentemente
+  const disponibilidadCache = useMemo(() => new Map(), []);
 
-    fetchUser();
+  // Función para formatear hora (memoizada)
+  const formatHora = useCallback((horaStr) => {
+    if (!horaStr) return '';
+    
+    // Convertir formato "HH:MM:SS" a "HH:MM AM/PM"
+    const [hora, minuto] = horaStr.split(':');
+    let h = parseInt(hora);
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12; // Convertir a formato 12 horas
+    return `${h}:${minuto} ${ampm}`;
   }, []);
 
-  // Obtener detalles de la ruta y horarios disponibles
-  useEffect(() => {
-    const fetchData = async () => {
-      if (!ruta || !fecha) return;
+  // Función para manejar clic en botón reservar (memoizada)
+  const handleReservar = useCallback((horarioId) => {
+    if (authLoading) return; // Evitar redirecciones durante carga
+    
+    if (!user) {
+      toast.error('Debes iniciar sesión para reservar');
+      navigateTo(`/login?redirect=/horarios?ruta=${ruta}&fecha=${fecha}`);
+      return;
+    }
 
-      setLoading(true);
+    navigateTo(`/reservar?horario=${horarioId}&fecha=${fecha}`);
+  }, [user, authLoading, ruta, fecha]);
+
+  // Componentes de estado memoizados
+  const loadingContent = useMemo(() => (
+    <div className="flex justify-center items-center h-64">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+        <p className="mt-4">Cargando horarios disponibles...</p>
+      </div>
+    </div>
+  ), []);
+
+  const errorContent = useMemo(() => (
+    <div className="text-center py-10">
+      <h2 className="text-2xl font-bold mb-4">Error</h2>
+      <p className="mb-4 text-red-500">{error}</p>
+      <Link href="/" className="text-primary hover:underline">
+        Volver al inicio
+      </Link>
+    </div>
+  ), [error]);
+
+  const notFoundContent = useMemo(() => (
+    <div className="text-center py-10">
+      <h2 className="text-2xl font-bold mb-4">Ruta no encontrada</h2>
+      <p className="mb-4">La ruta solicitada no existe o no está disponible.</p>
+      <Link href="/" className="text-primary hover:underline">
+        Volver al inicio
+      </Link>
+    </div>
+  ), []);
+
+  // Función para cargar datos de la ruta y horarios
+  const fetchData = useCallback(async () => {
+    if (!ruta || !fecha) return;
+    
+    setLoading(true);
+    setError(null);
+    
+    try {
+      // Verificar caché para este conjunto de datos
+      const cacheKey = `${ruta}-${fecha}`;
+      const cachedData = disponibilidadCache.get(cacheKey);
       
-      try {
-        // Obtener detalles de la ruta
-        const { data: rutaData, error: rutaError } = await supabase
-          .from('rutas')
-          .select('*')
-          .eq('id', ruta)
-          .single();
+      if (cachedData && (Date.now() - cachedData.timestamp < CACHE_TTL)) {
+        console.log(`Usando datos en caché para ruta: ${ruta}, fecha: ${fecha}`);
+        setDetallesRuta(cachedData.detallesRuta);
+        setHorarios(cachedData.horarios);
+        setLoading(false);
+        return;
+      }
+      
+      // 1. Obtener detalles de la ruta
+      const { data: rutaData, error: rutaError } = await supabase
+        .from('rutas')
+        .select('*')
+        .eq('id', ruta)
+        .single();
 
-        if (rutaError) throw rutaError;
-        setDetallesRuta(rutaData);
+      if (rutaError) {
+        console.error('Error al cargar datos de ruta:', rutaError);
+        throw rutaError;
+      }
+      
+      setDetallesRuta(rutaData);
+      console.log(`Ruta cargada: ${rutaData.origen} → ${rutaData.destino}`);
 
-        // Obtener horarios disponibles
-        const diaSemana = new Date(fecha).toLocaleString('es', { weekday: 'long' }).toLowerCase();
-        
-        const { data: horariosData, error: horariosError } = await supabase
-          .from('horarios')
-          .select(`
-            id, 
-            hora_salida, 
-            precio,
-            dias_operacion,
-            buses:bus_id (id, numero, capacidad, tipo, caracteristicas)
-          `)
-          .eq('ruta_id', ruta)
-          .contains('dias_operacion', [diaSemana]);
+      // 2. Obtener horarios disponibles
+      const diaSemana = new Date(fecha).toLocaleString('es', { weekday: 'long' }).toLowerCase();
+      
+      const { data: horariosData, error: horariosError } = await supabase
+        .from('horarios')
+        .select(`
+          id, 
+          hora_salida, 
+          precio,
+          dias_operacion,
+          buses:bus_id (id, numero, capacidad, tipo, caracteristicas)
+        `)
+        .eq('ruta_id', ruta)
+        .contains('dias_operacion', [diaSemana]);
 
-        if (horariosError) throw horariosError;
+      if (horariosError) {
+        console.error('Error al cargar horarios:', horariosError);
+        throw horariosError;
+      }
+      
+      console.log(`${horariosData.length} horarios encontrados para el día ${diaSemana}`);
 
-        // Verificar disponibilidad de asientos para cada horario
-        const horariosConDisponibilidad = await Promise.all(horariosData.map(async (horario) => {
+      // 3. Verificar disponibilidad de asientos para cada horario
+      const horariosConDisponibilidad = await Promise.all(horariosData.map(async (horario) => {
+        try {
           // Buscar reservaciones para este horario y fecha
           const { data: reservaciones, error: reservacionesError } = await supabase
             .from('reservaciones')
@@ -75,7 +163,15 @@ export default function Horarios() {
             .eq('fecha_viaje', fecha)
             .in('estado', ['Pendiente', 'Confirmada']);
 
-          if (reservacionesError) throw reservacionesError;
+          if (reservacionesError) {
+            console.warn('Error al verificar reservaciones:', reservacionesError);
+            // Continuamos con 0 reservaciones en lugar de fallar
+            return {
+              ...horario,
+              asientosDisponibles: horario.buses.capacidad,
+              asientosReservados: 0
+            };
+          }
 
           // Contar asientos reservados
           const asientosReservados = reservaciones.reduce((total, reserva) => {
@@ -90,60 +186,71 @@ export default function Horarios() {
             asientosDisponibles,
             asientosReservados
           };
-        }));
+        } catch (error) {
+          console.error(`Error al procesar horario ${horario.id}:`, error);
+          // En caso de error, asumimos que todos los asientos están disponibles
+          return {
+            ...horario,
+            asientosDisponibles: horario.buses.capacidad,
+            asientosReservados: 0,
+            error: true
+          };
+        }
+      }));
 
-        setHorarios(horariosConDisponibilidad);
-      } catch (error) {
-        console.error('Error al cargar datos:', error);
-        toast.error('Error al cargar horarios');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, [ruta, fecha]);
-
-  const formatHora = (horaStr) => {
-    // Convertir formato "HH:MM:SS" a "HH:MM AM/PM"
-    const [hora, minuto] = horaStr.split(':');
-    let h = parseInt(hora);
-    const ampm = h >= 12 ? 'PM' : 'AM';
-    h = h % 12 || 12; // Convertir a formato 12 horas
-    return `${h}:${minuto} ${ampm}`;
-  };
-
-  const handleReservar = (horarioId) => {
-    if (!user) {
-      toast.error('Debes iniciar sesión para reservar');
-      router.push(`/login?redirect=/horarios?ruta=${ruta}&fecha=${fecha}`);
-      return;
+      // Ordenar horarios por hora de salida
+      const horariosSorted = horariosConDisponibilidad.sort((a, b) => 
+        a.hora_salida.localeCompare(b.hora_salida)
+      );
+      
+      setHorarios(horariosSorted);
+      console.log(`${horariosSorted.length} horarios procesados con disponibilidad`);
+      
+      // Guardar en caché
+      disponibilidadCache.set(cacheKey, {
+        timestamp: Date.now(),
+        detallesRuta: rutaData,
+        horarios: horariosSorted
+      });
+      
+      // Limpiar entradas antiguas del caché
+      const now = Date.now();
+      disponibilidadCache.forEach((value, key) => {
+        if (now - value.timestamp > CACHE_TTL) {
+          disponibilidadCache.delete(key);
+        }
+      });
+    } catch (error) {
+      console.error('Error al cargar datos:', error);
+      setError('Error al cargar horarios');
+      toast.error('Error al cargar horarios');
+    } finally {
+      setLoading(false);
     }
+  }, [ruta, fecha, disponibilidadCache]);
 
-    router.push(`/reservar?horario=${horarioId}&fecha=${fecha}`);
-  };
+  // Efecto para cargar datos de la ruta y horarios
+  useEffect(() => {
+    // Solo ejecutar si ruta y fecha están disponibles
+    if (!ruta || !fecha) return;
 
+    // Cargar datos de la ruta y horarios
+    fetchData();
+  }, [ruta, fecha, fetchData]); // Incluir fetchData como dependencia
+
+  // Mostrar pantalla de carga
   if (loading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4">Cargando horarios disponibles...</p>
-        </div>
-      </div>
-    );
+    return loadingContent;
   }
 
+  // Mostrar error si ocurrió alguno
+  if (error) {
+    return errorContent;
+  }
+
+  // Mostrar mensaje si no se encontró la ruta
   if (!detallesRuta) {
-    return (
-      <div className="text-center py-10">
-        <h2 className="text-2xl font-bold mb-4">Ruta no encontrada</h2>
-        <p className="mb-4">La ruta solicitada no existe o no está disponible.</p>
-        <Link href="/" className="text-primary hover:underline">
-          Volver al inicio
-        </Link>
-      </div>
-    );
+    return notFoundContent;
   }
 
   return (
@@ -180,7 +287,7 @@ export default function Horarios() {
       ) : (
         <div className="bg-white rounded-lg shadow-md overflow-hidden">
           <h2 className="text-lg font-semibold p-4 bg-gray-100 border-b">
-            Horarios disponibles
+            Horarios disponibles ({horarios.length})
           </h2>
           
           <div className="divide-y">
@@ -205,7 +312,7 @@ export default function Horarios() {
                         ? 'bg-yellow-100 text-yellow-800'
                         : 'bg-red-100 text-red-800'
                     }`}>
-                      {horario.asientosDisponibles} asientos disponibles
+                      {horario.asientosDisponibles} {horario.asientosDisponibles === 1 ? 'asiento disponible' : 'asientos disponibles'}
                     </p>
                     
                     <div className="mt-2 text-sm text-gray-600">
@@ -220,7 +327,7 @@ export default function Horarios() {
                   <button
                     onClick={() => handleReservar(horario.id)}
                     disabled={horario.asientosDisponibles <= 0}
-                    className={`mt-3 md:mt-0 px-4 py-2 rounded ${
+                    className={`mt-3 md:mt-0 px-4 py-2 rounded transition ${
                       horario.asientosDisponibles > 0
                         ? 'bg-primary text-white hover:bg-opacity-90'
                         : 'bg-gray-300 text-gray-500 cursor-not-allowed'

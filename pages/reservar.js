@@ -1,140 +1,43 @@
-///home/phiuser/phi/transporte-app/pages/reservar.js
-import { useState, useEffect } from 'react';
-import { useRouter } from 'next/router';
+// pages/reservar.js
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
-import { v4 as uuidv4 } from 'uuid';
+import { navigateTo } from '../lib/navigationService';
+import { useAuth } from '../lib/AuthContext'; // Contexto centralizado de auth
+
+// Hook personalizado para obtener parámetros de ruta
+function useParams() {
+  if (typeof window === 'undefined') {
+    return { query: {} }; 
+  }
+  const router = require('next/router').useRouter();
+  return router.query || {};
+}
 
 export default function Reservar() {
-  const router = useRouter();
-  const { horario, fecha } = router.query;
+  // Obtener parámetros de la URL
+  const { horario, fecha } = useParams();
   
+  // Estados para manejar la carga y datos
   const [loading, setLoading] = useState(true);
   const [procesandoReserva, setProcesandoReserva] = useState(false);
-  const [user, setUser] = useState(null);
   const [horarioData, setHorarioData] = useState(null);
   const [rutaData, setRutaData] = useState(null);
   const [busData, setBusData] = useState(null);
   const [asientos, setAsientos] = useState([]);
   const [asientosSeleccionados, setAsientosSeleccionados] = useState([]);
   const [asientosReservados, setAsientosReservados] = useState([]);
+  const [error, setError] = useState(null);
+  
+  // Usar contexto de autenticación centralizado
+  const { user, loading: authLoading } = useAuth();
 
-  // Verificar autenticación
-  useEffect(() => {
-    const checkAuth = async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session) {
-        toast.error('Debes iniciar sesión para reservar');
-        router.push(`/login?redirect=/reservar?horario=${horario}&fecha=${fecha}`);
-        return;
-      }
-      
-      setUser(session.user);
-    };
-
-    if (horario && fecha) {
-      checkAuth();
-    }
-  }, [horario, fecha, router]);
-
-  // Cargar datos del horario, ruta, bus y asientos
-  useEffect(() => {
-    const fetchData = async () => {
-      if (!horario || !fecha || !user) return;
-
-      setLoading(true);
-      
-      try {
-        // Obtener datos del horario
-        const { data: horarioData, error: horarioError } = await supabase
-          .from('horarios')
-          .select(`
-            id, 
-            hora_salida, 
-            precio,
-            ruta_id,
-            bus_id
-          `)
-          .eq('id', horario)
-          .single();
-
-        if (horarioError) throw horarioError;
-        setHorarioData(horarioData);
-
-        // Obtener datos de la ruta
-        const { data: rutaData, error: rutaError } = await supabase
-          .from('rutas')
-          .select('*')
-          .eq('id', horarioData.ruta_id)
-          .single();
-
-        if (rutaError) throw rutaError;
-        setRutaData(rutaData);
-
-        // Obtener datos del bus
-        const { data: busData, error: busError } = await supabase
-          .from('buses')
-          .select('*')
-          .eq('id', horarioData.bus_id)
-          .single();
-
-        if (busError) throw busError;
-        setBusData(busData);
-
-        // Obtener todos los asientos del bus
-        const { data: asientosData, error: asientosError } = await supabase
-          .from('asientos')
-          .select('*')
-          .eq('bus_id', horarioData.bus_id)
-          .order('numero');
-
-        if (asientosError) throw asientosError;
-
-        // Obtener asientos ya reservados para este horario y fecha
-        const { data: reservaciones, error: reservacionesError } = await supabase
-          .from('reservaciones')
-          .select(`
-            id,
-            detalles_reservacion (
-              asiento_id
-            )
-          `)
-          .eq('horario_id', horarioData.id)
-          .eq('fecha_viaje', fecha)
-          .in('estado', ['Pendiente', 'Confirmada']);
-
-        if (reservacionesError) throw reservacionesError;
-
-        // Extraer IDs de asientos reservados
-        const asientosReservadosIds = [];
-        reservaciones.forEach(reserva => {
-          if (reserva.detalles_reservacion) {
-            reserva.detalles_reservacion.forEach(detalle => {
-              asientosReservadosIds.push(detalle.asiento_id);
-            });
-          }
-        });
-
-        setAsientosReservados(asientosReservadosIds);
-        setAsientos(asientosData);
-      } catch (error) {
-        console.error('Error al cargar datos:', error);
-        toast.error('Error al cargar información del viaje');
-        router.push('/');
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchData();
-  }, [horario, fecha, user, router]);
-
-  // Manejar selección de asientos
-  const toggleAsiento = (asientoId) => {
+  // Manejar selección de asientos (memoizado)
+  const toggleAsiento = useCallback((asientoId) => {
+    // No permitir seleccionar asientos ya reservados
     if (asientosReservados.includes(asientoId)) {
-      return; // No permitir seleccionar asientos ya reservados
+      return;
     }
 
     setAsientosSeleccionados(prev => {
@@ -144,19 +47,157 @@ export default function Reservar() {
         return [...prev, asientoId];
       }
     });
-  };
+  }, [asientosReservados]);
 
-  // Crear la reservación
-  const crearReservacion = async () => {
+  // Función para cargar datos iniciales
+  const fetchInitialData = useCallback(async () => {
+    if (!horario || !fecha || !user) return;
+    
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Obtener datos del horario
+      const { data: horarioData, error: horarioError } = await supabase
+        .from('horarios')
+        .select(`
+          id, 
+          hora_salida, 
+          precio,
+          ruta_id,
+          bus_id
+        `)
+        .eq('id', horario)
+        .single();
+
+      if (horarioError) {
+        console.error('Error al cargar horario:', horarioError);
+        throw horarioError;
+      }
+      
+      setHorarioData(horarioData);
+      console.log(`Horario cargado: ${horarioData.id}`);
+
+      // Obtener datos de la ruta
+      const { data: rutaData, error: rutaError } = await supabase
+        .from('rutas')
+        .select('*')
+        .eq('id', horarioData.ruta_id)
+        .single();
+
+      if (rutaError) {
+        console.error('Error al cargar ruta:', rutaError);
+        throw rutaError;
+      }
+      
+      setRutaData(rutaData);
+      console.log(`Ruta cargada: ${rutaData.origen} → ${rutaData.destino}`);
+
+      // Obtener datos del bus
+      const { data: busData, error: busError } = await supabase
+        .from('buses')
+        .select('*')
+        .eq('id', horarioData.bus_id)
+        .single();
+
+      if (busError) {
+        console.error('Error al cargar bus:', busError);
+        throw busError;
+      }
+      
+      setBusData(busData);
+      console.log(`Bus cargado: ${busData.numero}`);
+
+      // Obtener todos los asientos del bus
+      const { data: asientosData, error: asientosError } = await supabase
+        .from('asientos')
+        .select('*')
+        .eq('bus_id', horarioData.bus_id)
+        .order('numero');
+
+      if (asientosError) {
+        console.error('Error al cargar asientos:', asientosError);
+        throw asientosError;
+      }
+      
+      setAsientos(asientosData);
+      console.log(`${asientosData.length} asientos cargados`);
+
+      // Obtener asientos ya reservados para este horario y fecha
+      const { data: reservaciones, error: reservacionesError } = await supabase
+        .from('reservaciones')
+        .select(`
+          id,
+          detalles_reservacion (
+            id,
+            asiento_id
+          )
+        `)
+        .eq('horario_id', horarioData.id)
+        .eq('fecha_viaje', fecha)
+        .in('estado', ['Pendiente', 'Confirmada']);
+
+      if (reservacionesError) {
+        console.error('Error al cargar reservaciones:', reservacionesError);
+        throw reservacionesError;
+      }
+
+      // Extraer IDs de asientos reservados
+      const asientosReservadosIds = [];
+      reservaciones.forEach(reserva => {
+        if (reserva.detalles_reservacion) {
+          reserva.detalles_reservacion.forEach(detalle => {
+            asientosReservadosIds.push(detalle.asiento_id);
+          });
+        }
+      });
+
+      setAsientosReservados(asientosReservadosIds);
+      console.log(`${asientosReservadosIds.length} asientos ya reservados`);
+    } catch (error) {
+      console.error('Error al cargar datos:', error);
+      setError('Error al cargar información del viaje');
+      toast.error('Error al cargar información del viaje');
+    } finally {
+      setLoading(false);
+    }
+  }, [horario, fecha, user]);
+
+  // Efecto para verificar autenticación
+  useEffect(() => {
+    // Solo ejecutar si horario y fecha están disponibles y tenemos información de autenticación
+    if (!horario || !fecha || authLoading) return;
+
+    // Si no hay usuario después de verificar autenticación, redirigir a login
+    if (!user && !authLoading) {
+      toast.error('Debes iniciar sesión para reservar');
+      navigateTo(`/login?redirect=${encodeURIComponent(`/reservar?horario=${horario}&fecha=${fecha}`)}`);
+      return;
+    }
+    
+    // Cargar datos iniciales
+    fetchInitialData();
+  }, [horario, fecha, user, authLoading, fetchInitialData]);
+
+  // Función para crear reservación (memoizada)
+  const crearReservacion = useCallback(async () => {
     if (asientosSeleccionados.length === 0) {
       toast.error('Debes seleccionar al menos un asiento');
       return;
     }
 
+    if (procesandoReserva) {
+      return; // Evitar múltiples envíos
+    }
+
     setProcesandoReserva(true);
 
     try {
-      const referenceCode = `RES-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
+      // Generar código de referencia único
+      const uniqueSuffix = Date.now().toString(36) + Math.random().toString(36).substring(2, 5);
+      const referenceCode = `RES-${uniqueSuffix.toUpperCase()}`;
+      
+      console.log(`Creando reservación con referencia: ${referenceCode}`);
       
       // Crear la reservación
       const { data: reservacion, error: reservacionError } = await supabase
@@ -166,25 +207,39 @@ export default function Reservar() {
           horario_id: horarioData.id,
           fecha_viaje: fecha,
           estado: 'Pendiente',
-          reference_code: referenceCode
+          reference_code: referenceCode,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
         }])
         .select()
         .single();
 
-      if (reservacionError) throw reservacionError;
+      if (reservacionError) {
+        console.error('Error al crear reservación:', reservacionError);
+        throw reservacionError;
+      }
+      
+      console.log(`Reservación creada: ${reservacion.id}`);
 
       // Crear detalles de la reservación (asientos)
       const detallesReservacion = asientosSeleccionados.map(asientoId => ({
         reservacion_id: reservacion.id,
         asiento_id: asientoId,
-        precio: horarioData.precio
+        precio: horarioData.precio,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString()
       }));
 
       const { error: detallesError } = await supabase
         .from('detalles_reservacion')
         .insert(detallesReservacion);
 
-      if (detallesError) throw detallesError;
+      if (detallesError) {
+        console.error('Error al crear detalles de reservación:', detallesError);
+        throw detallesError;
+      }
+      
+      console.log(`${detallesReservacion.length} detalles de reservación creados`);
 
       // Crear registro de pago
       const montoTotal = horarioData.precio * asientosSeleccionados.length;
@@ -194,23 +249,40 @@ export default function Reservar() {
         .insert([{
           reservacion_id: reservacion.id,
           monto: montoTotal,
-          estado: 'Pendiente'
+          estado: 'Pendiente',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
         }]);
 
-      if (pagoError) throw pagoError;
+      if (pagoError) {
+        console.error('Error al crear pago:', pagoError);
+        throw pagoError;
+      }
+      
+      console.log(`Pago creado para reservación: ${reservacion.id}`);
 
       // Redirigir a la página de pago
-      router.push(`/pago/${reservacion.id}`);
+      toast.success('Reservación creada correctamente');
+      navigateTo(`/pago/${reservacion.id}`);
     } catch (error) {
       console.error('Error al crear reservación:', error);
       toast.error('Error al procesar la reservación');
-    } finally {
       setProcesandoReserva(false);
     }
-  };
+  }, [asientosSeleccionados, procesandoReserva, user, horarioData, fecha]);
 
-  // Renderizar mapa de asientos
-  const renderAsientos = () => {
+  // Formatear fecha y hora (memoizado)
+  const formatDate = useCallback((dateStr) => {
+    return new Date(dateStr).toLocaleDateString('es-EC', { 
+      weekday: 'long', 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric'
+    });
+  }, []);
+
+  // Componente para renderizar el mapa de asientos (memoizado)
+  const renderAsientos = useMemo(() => {
     if (!busData || asientos.length === 0) return null;
 
     // Organizar asientos por filas (4 asientos por fila, 2 en cada lado con pasillo)
@@ -302,15 +374,47 @@ export default function Reservar() {
         </div>
       </div>
     );
-  };
+  }, [busData, asientos, asientosReservados, asientosSeleccionados, toggleAsiento]);
 
-  if (loading) {
+  // Componentes de estado memoizados
+  const loadingContent = useMemo(() => (
+    <div className="flex justify-center items-center h-64">
+      <div className="text-center">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
+        <p className="mt-4">Cargando información del viaje...</p>
+      </div>
+    </div>
+  ), []);
+
+  const errorContent = useMemo(() => (
+    <div className="text-center py-10">
+      <h2 className="text-2xl font-bold mb-4">Error</h2>
+      <p className="mb-4 text-red-500">{error}</p>
+      <Link href="/" className="text-primary hover:underline">
+        Volver al inicio
+      </Link>
+    </div>
+  ), [error]);
+
+  // Mostrar pantalla de carga mientras se verifica autenticación o se cargan datos
+  if (authLoading || loading) {
+    return loadingContent;
+  }
+
+  // Mostrar error si ocurrió alguno
+  if (error) {
+    return errorContent;
+  }
+
+  // Mostrar mensaje si no se encontraron los datos necesarios
+  if (!rutaData || !horarioData || !busData) {
     return (
-      <div className="flex justify-center items-center h-64">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto"></div>
-          <p className="mt-4">Cargando información del viaje...</p>
-        </div>
+      <div className="text-center py-10">
+        <h2 className="text-2xl font-bold mb-4">Información no disponible</h2>
+        <p className="mb-4">No se encontró la información necesaria para completar la reservación.</p>
+        <Link href="/" className="text-primary hover:underline">
+          Volver al inicio
+        </Link>
       </div>
     );
   }
@@ -337,7 +441,7 @@ export default function Reservar() {
             {rutaData?.origen} → {rutaData?.destino}
           </p>
           <p>
-            <span className="font-medium">Fecha:</span> {new Date(fecha).toLocaleDateString('es-EC', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' })}
+            <span className="font-medium">Fecha:</span> {formatDate(fecha)}
           </p>
           <p>
             <span className="font-medium">Hora de salida:</span> {horarioData?.hora_salida.substring(0, 5)}
@@ -351,7 +455,7 @@ export default function Reservar() {
         </div>
       </div>
 
-      {renderAsientos()}
+      {renderAsientos}
 
       <div className="bg-white rounded-lg shadow-md p-6">
         <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-6">
@@ -376,9 +480,17 @@ export default function Reservar() {
           <button
             onClick={crearReservacion}
             disabled={asientosSeleccionados.length === 0 || procesandoReserva}
-            className="bg-primary text-white px-6 py-3 rounded hover:bg-opacity-90 disabled:opacity-50 transition"
+            className="bg-primary text-white px-6 py-3 rounded hover:bg-opacity-90 disabled:opacity-50 transition flex items-center justify-center"
           >
-            {procesandoReserva ? 'Procesando...' : 'Continuar a pago'}
+            {procesandoReserva ? (
+              <>
+                <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                Procesando...
+              </>
+            ) : 'Continuar a pago'}
           </button>
         </div>
       </div>

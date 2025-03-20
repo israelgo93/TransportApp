@@ -1,6 +1,10 @@
 // pages/api/place-to-pay.js
 import { createPaymentSession } from '../../lib/placeToPay';
 
+// Variable para rastrear solicitudes recientes y evitar duplicados
+const recentRequests = new Map();
+const REQUEST_THROTTLE = 5000; // 5 segundos entre solicitudes idénticas
+
 export default async function handler(req, res) {
   // Solo permitir solicitudes POST
   if (req.method !== 'POST') {
@@ -17,15 +21,29 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log('Iniciando solicitud a PlaceToPay con datos:', 
-      JSON.stringify({
-        ...paymentData,
-        reference: paymentData.reference,
-        amount: paymentData.amount,
-        // No mostrar datos sensibles en logs
-        buyerEmail: paymentData.buyerEmail ? '***@***' : undefined
-      })
-    );
+    // Crear un hash único para esta solicitud para evitar duplicados en envíos rápidos
+    const requestHash = `${paymentData.reference}-${paymentData.amount}-${Date.now().toString().substring(0, 8)}`;
+    
+    // Verificar si es una solicitud duplicada reciente
+    if (recentRequests.has(requestHash)) {
+      console.log(`Solicitud duplicada detectada: ${requestHash}`);
+      return res.status(429).json({
+        message: 'Demasiadas solicitudes similares en poco tiempo. Por favor, espere un momento.'
+      });
+    }
+    
+    // Registrar esta solicitud para evitar duplicados
+    recentRequests.set(requestHash, Date.now());
+    
+    // Limpiar solicitudes antiguas (más de 5 segundos)
+    const now = Date.now();
+    recentRequests.forEach((timestamp, key) => {
+      if (now - timestamp > REQUEST_THROTTLE) {
+        recentRequests.delete(key);
+      }
+    });
+    
+    console.log('Iniciando solicitud a PlaceToPay con referencia:', paymentData.reference);
 
     // Imprimir las variables de entorno (ocultando valores sensibles)
     console.log('Variables de entorno disponibles:', {
@@ -59,7 +77,7 @@ export default async function handler(req, res) {
         JSON.stringify({
           status: response.status?.status,
           requestId: response.requestId,
-          processUrl: response.processUrl ? '[URL generada]' : 'No disponible'
+          hasProcessUrl: !!response.processUrl
         })
       );
 
@@ -75,6 +93,15 @@ export default async function handler(req, res) {
       return res.status(200).json(response);
     } catch (ptpError) {
       console.error('Error específico de PlaceToPay:', ptpError);
+      
+      // Manejar errores específicos de PlaceToPay
+      if (ptpError.response && ptpError.response.status === 401) {
+        return res.status(401).json({
+          message: 'Error de autenticación con PlaceToPay. Verifique las credenciales.',
+          error: ptpError.message
+        });
+      }
+      
       return res.status(500).json({
         message: 'Error al comunicarse con PlaceToPay',
         error: ptpError.message
