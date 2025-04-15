@@ -554,7 +554,7 @@ export default function Boleto() {
           
           <div className="code-box">
             <svg ref={barcodeRef} className="barcode"></svg>
-            <p className="code-label mt-2">Código de barras</p>
+            <p className="w-full h-auto">Código de barras</p>
             {/* Mostrar el código de forma visible para verificación manual si es necesario */}
             <p className="text-xs text-gray-500">{codigoBarras}</p>
           </div>
