@@ -1,4 +1,4 @@
-// pages/boleto/[id].js
+// pages/boleto/[id].js - Versión actualizada con soporte para código de barras
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import Link from 'next/link';
 import { supabase } from '../../lib/supabase';
@@ -6,12 +6,15 @@ import toast from 'react-hot-toast';
 import QRCode from 'qrcode.react';
 import { navigateTo } from '../../lib/navigationService';
 import { useAuth } from '../../lib/AuthContext'; // Contexto centralizado de auth
+import JsBarcode from 'jsbarcode'; // Librería para generar códigos de barras
 
 export default function Boleto() {
   const boletoRef = useRef(null);
+  const barcodeRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [reservacion, setReservacion] = useState(null);
   const [error, setError] = useState(null);
+  const [codigoBarras, setCodigoBarras] = useState('');
   
   // Usar contexto de autenticación centralizado
   const { user, profile, loading: authLoading } = useAuth();
@@ -25,6 +28,56 @@ export default function Boleto() {
       require('next/router').useRouter() : { query: {} };
     return router.query || {};
   }
+
+  // Generar código de barras único para esta reservación
+  const generarCodigoBarras = useCallback(async (reservacionId, referenceCode) => {
+    try {
+      // Verificar si ya existe un código de barras para esta reservación
+      const { data: existingBarcode, error: queryError } = await supabase
+        .from('codigos_barras_boletos')
+        .select('codigo_barras')
+        .eq('reservacion_id', reservacionId)
+        .maybeSingle();
+      
+      if (queryError) {
+        console.error('Error al verificar código de barras existente:', queryError);
+        throw queryError;
+      }
+      
+      // Si ya existe, usar ese código
+      if (existingBarcode) {
+        console.log('Usando código de barras existente:', existingBarcode.codigo_barras);
+        return existingBarcode.codigo_barras;
+      }
+      
+      // Si no existe, generar un nuevo código de barras
+      // Formato: BC-[Primeros 4 caracteres de referenceCode]-[Timestamp]
+      const timestamp = Date.now().toString(36); // Convertir timestamp a base36 para acortar
+      const prefix = referenceCode.substring(0, 4);
+      const newBarcode = `BC-${prefix}-${timestamp}`.toUpperCase();
+      
+      console.log('Generando nuevo código de barras:', newBarcode);
+      
+      // Guardar el nuevo código en la base de datos
+      const { error: insertError } = await supabase
+        .from('codigos_barras_boletos')
+        .insert({
+          reservacion_id: reservacionId,
+          codigo_barras: newBarcode
+        });
+      
+      if (insertError) {
+        console.error('Error al guardar código de barras:', insertError);
+        throw insertError;
+      }
+      
+      return newBarcode;
+    } catch (error) {
+      console.error('Error al generar código de barras:', error);
+      // Retornar un código generado localmente como fallback
+      return `FALLBACK-${referenceCode.substring(0, 6)}`;
+    }
+  }, []);
 
   // Efecto para cargar datos de la reservación
   useEffect(() => {
@@ -52,6 +105,8 @@ export default function Boleto() {
             reference_code,
             created_at,
             usuario_id,
+            boleto_validado,
+            fecha_validacion,
             horarios:horario_id (
               id,
               hora_salida,
@@ -105,6 +160,34 @@ export default function Boleto() {
         
         setReservacion(reservacionData);
         console.log('Reservación cargada correctamente');
+        
+        // Generar o recuperar el código de barras
+        const barcode = await generarCodigoBarras(
+          reservacionData.id,
+          reservacionData.reference_code
+        );
+        
+        setCodigoBarras(barcode);
+        
+        // Renderizar el código de barras cuando esté disponible
+        if (barcode && barcodeRef.current) {
+          try {
+            JsBarcode(barcodeRef.current, barcode, {
+              format: "CODE128",
+              width: 2,
+              height: 50,
+              displayValue: true,
+              text: barcode,
+              font: "monospace",
+              fontSize: 14,
+              textMargin: 2,
+              background: "white",
+            });
+          } catch (barcodeError) {
+            console.error('Error al generar imagen de código de barras:', barcodeError);
+          }
+        }
+        
         setLoading(false);
       } catch (error) {
         console.error('Error al cargar datos:', error);
@@ -115,7 +198,28 @@ export default function Boleto() {
     };
 
     fetchData();
-  }, [id, user, authLoading]);
+  }, [id, user, authLoading, generarCodigoBarras]);
+
+  // Efecto para renderizar el código de barras cuando cambie
+  useEffect(() => {
+    if (codigoBarras && barcodeRef.current) {
+      try {
+        JsBarcode(barcodeRef.current, codigoBarras, {
+          format: "CODE128",
+          width: 2,
+          height: 50,
+          displayValue: true,
+          text: codigoBarras,
+          font: "monospace",
+          fontSize: 14,
+          textMargin: 2,
+          background: "white",
+        });
+      } catch (error) {
+        console.error('Error al renderizar código de barras:', error);
+      }
+    }
+  }, [codigoBarras]);
 
   // Formatear fecha (memoizada para evitar recálculos)
   const formatFecha = useCallback((fechaStr) => {
@@ -195,7 +299,7 @@ export default function Boleto() {
               color: #666;
               text-align: center;
             }
-            .qr-code {
+            .qr-code, .barcode {
               display: flex;
               justify-content: center;
               margin-top: 20px;
@@ -204,6 +308,21 @@ export default function Boleto() {
               .no-print {
                 display: none;
               }
+            }
+            .codes-container {
+              display: flex;
+              justify-content: space-around;
+              flex-wrap: wrap;
+              margin-top: 20px;
+            }
+            .code-box {
+              text-align: center;
+              margin: 10px;
+            }
+            .code-label {
+              font-size: 12px;
+              color: #666;
+              margin-top: 5px;
             }
           </style>
         </head>
@@ -285,6 +404,35 @@ export default function Boleto() {
     ? `${window.location.origin}/verificar/${reservacion.reference_code}` 
     : `/verificar/${reservacion.reference_code}`;
   
+  // Indicador de estado de validación
+  const getBoletoEstado = () => {
+    if (reservacion.boleto_validado) {
+      return (
+        <div className="px-3 py-1 bg-yellow-100 text-yellow-800 rounded-full text-sm font-medium inline-block">
+          Boleto utilizado el {new Date(reservacion.fecha_validacion).toLocaleString()}
+        </div>
+      );
+    }
+    
+    const fechaViaje = new Date(reservacion.fecha_viaje);
+    fechaViaje.setHours(23, 59, 59, 999);
+    const hoy = new Date();
+    
+    if (fechaViaje < hoy) {
+      return (
+        <div className="px-3 py-1 bg-red-100 text-red-800 rounded-full text-sm font-medium inline-block">
+          Boleto caducado
+        </div>
+      );
+    }
+    
+    return (
+      <div className="px-3 py-1 bg-green-100 text-green-800 rounded-full text-sm font-medium inline-block">
+        Boleto válido
+      </div>
+    );
+  };
+  
   return (
     <div className="max-w-4xl mx-auto">
       <div className="mb-6 flex justify-between items-center">
@@ -310,6 +458,11 @@ export default function Boleto() {
         <div className="flex justify-between items-center border-b border-gray-200 pb-4 mb-6">
           <div className="text-xl font-bold text-primary">TransportApp Ecuador</div>
           <div className="text-gray-600">Boleto #{reservacion.reference_code}</div>
+        </div>
+        
+        {/* Estado del boleto */}
+        <div className="text-center mb-6">
+          {getBoletoEstado()}
         </div>
         
         <div className="mb-6">
@@ -372,16 +525,22 @@ export default function Boleto() {
           </p>
         </div>
         
-        <div className="flex justify-center">
-          <div className="text-center">
+        {/* Contenedor para QR y código de barras */}
+        <div className="codes-container flex justify-around flex-wrap">
+          <div className="code-box">
             <QRCode 
               value={qrUrl}
               size={128}
               renderAs="svg"
               includeMargin={true}
             />
-            <p className="text-sm text-gray-600 mt-2">Código de verificación</p>
+            <p className="code-label mt-2">Código QR de verificación</p>
             <p className="text-xs text-gray-500">{reservacion.reference_code}</p>
+          </div>
+          
+          <div className="code-box">
+            <svg ref={barcodeRef} className="barcode"></svg>
+            <p className="code-label mt-2">Código de barras</p>
           </div>
         </div>
         

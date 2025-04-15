@@ -10,11 +10,13 @@ export default function Layout({ children }) {
   // Reemplazamos la gestión local de usuario con el contexto centralizado
   const { user, loading } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [mostradorOpen, setMostradorOpen] = useState(false); // Nuevo menú para operaciones de mostrador
 
   // Eliminamos el useEffect que manejaba la autenticación
   // y mantenemos solo el efecto para cerrar el menú al cambiar de ruta
   useEffect(() => {
     setMenuOpen(false);
+    setMostradorOpen(false);
   }, [router.pathname]);
 
   const handleSignOut = async () => {
@@ -64,6 +66,32 @@ export default function Layout({ children }) {
                       <Link href="/reservaciones" className="hover:underline">
                         Mis Reservaciones
                       </Link>
+                      
+                      {/* Menú de Mostrador con submenú */}
+                      <div className="relative">
+                        <button 
+                          onClick={() => setMostradorOpen(!mostradorOpen)}
+                          className="flex items-center hover:underline focus:outline-none"
+                        >
+                          Mostrador
+                          <svg className={`ml-1 w-4 h-4 transform ${mostradorOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7" />
+                          </svg>
+                        </button>
+                        
+                        {/* Dropdown Menu para Mostrador */}
+                        {mostradorOpen && (
+                          <div className="absolute left-0 mt-2 py-2 w-48 bg-white rounded-md shadow-xl z-20">
+                            <Link href="/verificador" className="block px-4 py-2 text-gray-800 hover:bg-primary hover:text-white">
+                              Verificador de Boletos
+                            </Link>
+                            <Link href="/historial-verificaciones" className="block px-4 py-2 text-gray-800 hover:bg-primary hover:text-white">
+                              Historial de Verificaciones
+                            </Link>
+                          </div>
+                        )}
+                      </div>
+                      
                       <Link href="/perfil" className="hover:underline">
                         Mi Perfil
                       </Link>
@@ -108,6 +136,20 @@ export default function Layout({ children }) {
                       <Link href="/reservaciones" className="py-2 hover:bg-white hover:bg-opacity-10 px-2 rounded">
                         Mis Reservaciones
                       </Link>
+                      
+                      {/* Sección de Mostrador para móviles */}
+                      <div className="py-2 px-2">
+                        <div className="font-medium mb-2">Mostrador:</div>
+                        <div className="pl-2 space-y-2">
+                          <Link href="/verificador" className="block py-1 hover:bg-white hover:bg-opacity-10 rounded">
+                            Verificador de Boletos
+                          </Link>
+                          <Link href="/historial-verificaciones" className="block py-1 hover:bg-white hover:bg-opacity-10 rounded">
+                            Historial de Verificaciones
+                          </Link>
+                        </div>
+                      </div>
+                      
                       <Link href="/perfil" className="py-2 hover:bg-white hover:bg-opacity-10 px-2 rounded">
                         Mi Perfil
                       </Link>
@@ -162,6 +204,11 @@ export default function Layout({ children }) {
               <Link href="/perfil" className="text-sm text-gray-300 hover:text-white">
                 Mi Perfil
               </Link>
+              {user && (
+                <Link href="/verificador" className="text-sm text-gray-300 hover:text-white">
+                  Verificar Boletos
+                </Link>
+              )}
             </div>
             <div className="text-sm mt-4 md:mt-0">
               <p>&copy; {new Date().getFullYear()} TransportApp Ecuador. Todos los derechos reservados.</p>
