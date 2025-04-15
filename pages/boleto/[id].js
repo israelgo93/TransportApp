@@ -51,10 +51,17 @@ export default function Boleto() {
       }
       
       // Si no existe, generar un nuevo código de barras
-      // Formato: BC-[Primeros 4 caracteres de referenceCode]-[Timestamp]
-      const timestamp = Date.now().toString(36); // Convertir timestamp a base36 para acortar
-      const prefix = referenceCode.substring(0, 4);
-      const newBarcode = `BC-${prefix}-${timestamp}`.toUpperCase();
+      // Formato: BCRES seguido de 8-10 caracteres alfanuméricos (evitar guiones)
+      // Limpiamos el reference_code de cualquier carácter no alfanumérico
+      const cleanRef = referenceCode.replace(/[^A-Z0-9]/g, '');
+      const shortRef = cleanRef.substring(0, 4);
+      
+      // Generar un timestamp usando hexadecimal para hacerlo más corto
+      const timestamp = Date.now().toString(16).toUpperCase();
+      
+      // Combinar para crear un código único
+      // BCRES es el prefijo para identificar que es un código de barras
+      const newBarcode = `BCRES${shortRef}${timestamp}`;
       
       console.log('Generando nuevo código de barras:', newBarcode);
       
@@ -75,7 +82,9 @@ export default function Boleto() {
     } catch (error) {
       console.error('Error al generar código de barras:', error);
       // Retornar un código generado localmente como fallback
-      return `FALLBACK-${referenceCode.substring(0, 6)}`;
+      const fallbackCode = `BCRES${Math.random().toString(16).substring(2, 10).toUpperCase()}`;
+      console.log('Usando código fallback:', fallbackCode);
+      return fallbackCode;
     }
   }, []);
 
@@ -204,16 +213,21 @@ export default function Boleto() {
   useEffect(() => {
     if (codigoBarras && barcodeRef.current) {
       try {
+        // Mejorar configuración para mayor compatibilidad con escáneres
         JsBarcode(barcodeRef.current, codigoBarras, {
           format: "CODE128",
-          width: 2,
-          height: 50,
-          displayValue: true,
-          text: codigoBarras,
-          font: "monospace",
-          fontSize: 14,
-          textMargin: 2,
-          background: "white",
+          width: 3,             // Aumentamos el ancho para mejor legibilidad
+          height: 80,           // Aumentamos la altura para mejor escaneo
+          displayValue: true,   // Mostrar el valor del código
+          text: codigoBarras,   // Texto que se muestra debajo
+          font: "monospace",    // Fuente legible para operadores
+          fontSize: 16,         // Tamaño de fuente aumentado
+          textMargin: 4,        // Mayor espacio para el texto
+          margin: 10,           // Más margen alrededor del código
+          background: "white",  // Fondo blanco para mejor contraste
+          lineColor: "#000000", // Negro puro para líneas
+          textAlign: "center",  // Centrar el texto
+          flat: false           // Proporciona un mejor renderizado para escáneres
         });
       } catch (error) {
         console.error('Error al renderizar código de barras:', error);
@@ -526,7 +540,7 @@ export default function Boleto() {
         </div>
         
         {/* Contenedor para QR y código de barras */}
-        <div className="codes-container flex justify-around flex-wrap">
+        <div className="codes-container flex justify-around flex-wrap border-t pt-6">
           <div className="code-box">
             <QRCode 
               value={qrUrl}
@@ -541,6 +555,8 @@ export default function Boleto() {
           <div className="code-box">
             <svg ref={barcodeRef} className="barcode"></svg>
             <p className="code-label mt-2">Código de barras</p>
+            {/* Mostrar el código de forma visible para verificación manual si es necesario */}
+            <p className="text-xs text-gray-500">{codigoBarras}</p>
           </div>
         </div>
         

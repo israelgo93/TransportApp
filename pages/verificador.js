@@ -39,6 +39,7 @@ export default function Verificador() {
   const [historial, setHistorial] = useState([]);
   const [scannerTest, setScannerTest] = useState('');
   const [showScannerTest, setShowScannerTest] = useState(false);
+  const [rawScannerInput, setRawScannerInput] = useState('');
   
   // Limpiar el estado después de una verificación
   const resetStatusAfterDelay = useCallback((delay = 5000) => {
@@ -63,28 +64,64 @@ export default function Verificador() {
     }
   }, []);
 
+  // Función para procesar el código escaneado y normalizarlo
+  const processScannedCode = useCallback((rawCode) => {
+    if (!rawCode || rawCode.trim() === '') return null;
+    
+    // Guardar entrada cruda para diagnóstico
+    setRawScannerInput(rawCode);
+    
+    // Eliminar caracteres problemáticos que pueden venir del escáner
+    let processedCode = rawCode.trim();
+    
+    // Manejar apóstrofes y otros caracteres especiales
+    processedCode = processedCode.replace(/['"`\s]/g, '');
+    
+    // Para códigos de barras específicos (análisis especial)
+    if (processedCode.includes('BC') && processedCode.includes('RES')) {
+      // El formato esperado es algo como "BCRES123ABC" o similar (sin guiones)
+      // Pero el escáner puede añadir caracteres, así que lo limpiamos
+      console.log(`Procesando código de barras: ${processedCode}`);
+    }
+    
+    return processedCode;
+  }, []);
+
   // Función para verificar un código (QR o barras)
   const verifyCode = useCallback(async (code) => {
     if (!code || isProcessing) return;
     
     setIsProcessing(true);
-    setLastScannedCode(code);
+    
+    // Procesar el código
+    const processedCode = processScannedCode(code);
+    if (!processedCode) {
+      setIsProcessing(false);
+      return;
+    }
+    
+    setLastScannedCode(processedCode);
     
     try {
+      console.log(`Enviando código para verificación: ${processedCode}`);
+      
       // Llamar a la API para verificar el código
       const response = await fetch('/api/verificar-boleto', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ codigo: code })
+        body: JSON.stringify({ codigo: processedCode })
       });
       
       const data = await response.json();
       
+      console.log('Respuesta de verificación:', data);
+      
       // Añadir al historial
       const verificationResult = {
-        code,
+        code: processedCode,
+        originalInput: rawScannerInput, // Guardar entrada original para diagnóstico
         timestamp: new Date().toISOString(),
         status: data.success ? data.status : 'ERROR',
         message: data.message,
@@ -124,32 +161,62 @@ export default function Verificador() {
     } finally {
       setIsProcessing(false);
       setManualCode('');
+      // Limpiar la entrada cruda después de un tiempo
+      setTimeout(() => setRawScannerInput(''), 10000);
     }
-  }, [isProcessing, playSound, resetStatusAfterDelay]);
+  }, [isProcessing, playSound, resetStatusAfterDelay, processScannedCode, rawScannerInput]);
+
+  // Buffer para acumular entrada del escáner
+  const scanBuffer = useRef('');
+  const scanTimeoutRef = useRef(null);
 
   // Manejar escaneo desde el lector de código de barras
   const handleScan = useCallback((event) => {
-    // Capturar el código cuando el lector envía un "Enter" después del escaneo
-    if (event.key === 'Enter' && inputRef.current) {
-      const code = inputRef.current.value.trim();
-      
-      // Si estamos en modo de prueba del lector
-      if (showScannerTest) {
-        setScannerTest(code);
-        inputRef.current.value = ''; // Limpiar el campo
-        return;
-      }
-      
-      // Si tenemos un código válido, proceder con la verificación
-      if (code) {
-        inputRef.current.value = ''; // Limpiar el campo para el próximo escaneo
-        
-        if (code !== lastScannedCode) {
-          verifyCode(code);
+    // Si presiona Enter, procesar el buffer acumulado
+    if (event.key === 'Enter') {
+      if (scanBuffer.current.trim()) {
+        // Limpiar timeout pendiente
+        if (scanTimeoutRef.current) {
+          clearTimeout(scanTimeoutRef.current);
+          scanTimeoutRef.current = null;
         }
+        
+        // Si estamos en modo de prueba del lector
+        if (showScannerTest) {
+          setScannerTest(scanBuffer.current);
+          scanBuffer.current = ''; // Limpiar el buffer
+          return;
+        }
+        
+        // Verificar el código completo
+        verifyCode(scanBuffer.current);
+        scanBuffer.current = ''; // Limpiar el buffer
       }
+      return;
     }
-  }, [lastScannedCode, verifyCode, showScannerTest]);
+    
+    // Procesar caracteres especiales o no imprimibles
+    if (event.key.length === 1 || event.key === 'Backspace') {
+      // Limpiar timeout previo
+      if (scanTimeoutRef.current) {
+        clearTimeout(scanTimeoutRef.current);
+      }
+      
+      // Actualizar el buffer
+      if (event.key === 'Backspace') {
+        scanBuffer.current = scanBuffer.current.slice(0, -1);
+      } else {
+        scanBuffer.current += event.key;
+      }
+      
+      // Establecer timeout para detectar fin de escaneo
+      // Los escáneres generalmente envían datos muy rápido seguidos de Enter
+      scanTimeoutRef.current = setTimeout(() => {
+        // Si después de 100ms no ha llegado Enter, quizás se está escribiendo manualmente
+        // No hacemos nada y dejamos que buffer se acumule o se procese con Enter
+      }, 100);
+    }
+  }, [showScannerTest, verifyCode]);
 
   // Manejar verificación manual
   const handleManualVerify = (e) => {
@@ -173,6 +240,10 @@ export default function Verificador() {
     // Limpiar intervalo al desmontar
     return () => {
       clearInterval(interval);
+      // Limpiar el timeout del buffer de escaneo si existe
+      if (scanTimeoutRef.current) {
+        clearTimeout(scanTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -348,6 +419,9 @@ export default function Verificador() {
           <div className="p-4 bg-primary text-white flex justify-between items-center">
             <h1 className="text-xl font-bold">Verificador de Boletos</h1>
             <div>
+              <Link href="/historial-verificaciones" className="text-sm py-1 px-3 mr-2 rounded bg-white bg-opacity-20 hover:bg-opacity-30 transition-colors">
+                Historial
+              </Link>
               <button 
                 onClick={() => setShowScannerTest(!showScannerTest)}
                 className="text-sm py-1 px-3 rounded bg-white bg-opacity-20 hover:bg-opacity-30 transition-colors"
@@ -362,13 +436,15 @@ export default function Verificador() {
             <div className="bg-gray-50 p-4 border-b">
               <h3 className="font-medium mb-2">Prueba del lector de códigos</h3>
               <p className="text-sm text-gray-600 mb-2">Escanea cualquier código para verificar la conexión del lector</p>
-              <div className="bg-white p-3 border rounded">
+              <div className="bg-white p-3 border rounded mb-3">
                 <p className="text-sm text-gray-700">Último código escaneado:</p>
-                <p className="font-mono text-lg mt-1">{scannerTest || "Ningún código escaneado aún"}</p>
+                <p className="font-mono text-lg mt-1 break-all">{scannerTest || "Ningún código escaneado aún"}</p>
               </div>
-              <p className="text-xs text-gray-500 mt-2">
-                Si aparece el código escaneado, tu lector está funcionando correctamente.
-              </p>
+              <div className="text-xs bg-yellow-50 p-2 rounded">
+                <p className="font-medium text-yellow-800">Información para diagnóstico:</p>
+                <p className="text-yellow-700 mt-1">El código debe ser recibido como una secuencia de caracteres seguido de un Enter.</p>
+                <p className="text-yellow-700 mt-1">Si ves apóstrofes (&apos;) o caracteres extraños, puede indicar un problema de configuración del escáner.</p>
+              </div>
             </div>
           )}
           
@@ -398,6 +474,19 @@ export default function Verificador() {
                   Verificar
                 </button>
               </form>
+              
+              {/* Entrada directa del escáner (para diagnóstico) */}
+              {rawScannerInput && (
+                <div className="mt-4 bg-gray-100 p-3 rounded-lg">
+                  <p className="text-sm font-medium text-gray-700">Entrada original del escáner:</p>
+                  <div className="font-mono text-xs bg-white p-2 rounded mt-1 break-all border overflow-x-auto">
+                    {rawScannerInput}
+                  </div>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Esta información es útil para diagnóstico. Si ves apóstrofes (&apos;) o caracteres extraños, verifica la configuración del escáner.
+                  </p>
+                </div>
+              )}
             </div>
             
             {/* Recent Verifications */}
@@ -409,10 +498,15 @@ export default function Verificador() {
                     <div key={index} className="py-2">
                       <div className="flex justify-between items-center">
                         <div>
-                          <span className="font-medium">{item.code}</span>
+                          <span className="font-medium font-mono">{item.code}</span>
                           <p className="text-sm text-gray-600">
                             {new Date(item.timestamp).toLocaleTimeString()}
                           </p>
+                          {item.originalInput && item.originalInput !== item.code && (
+                            <p className="text-xs text-gray-500 font-mono mt-1">
+                              Original: {item.originalInput}
+                            </p>
+                          )}
                         </div>
                         <div>
                           <span className={`inline-block px-2 py-1 rounded-full text-xs font-medium ${
@@ -434,14 +528,27 @@ export default function Verificador() {
             
             {/* Instructions */}
             <div className="mt-8 border-t pt-6">
-              <h3 className="text-lg font-semibold mb-2">Instrucciones</h3>
+              <h3 className="text-lg font-semibold mb-2">Instrucciones para Symbol LI2208</h3>
               <div className="bg-blue-50 p-4 rounded-lg">
+                <h4 className="font-medium text-blue-800 mb-2">Configuración del escáner Symbol LI2208</h4>
                 <ol className="list-decimal list-inside text-sm text-blue-800 space-y-2">
-                  <li>Conecta el lector Zymbol LI2208 a un puerto USB del equipo.</li>
-                  <li>Asegúrate que el lector está configurado para enviar un Enter después de cada código.</li>
-                  <li>Si deseas comprobar la conexión, usa el botón &quot;Probar lector&quot;.</li>
-                  <li>Mantén esta página abierta y en foco durante la verificación de boletos.</li>
-                  <li>Escanea el código QR o de barras del boleto.</li>
+                  <li>Escanea los códigos de configuración en este orden:</li>
+                  <li className="ml-4">1) Escanea &quot;Enter Programming Mode&quot; (ver manual)</li>
+                  <li className="ml-4">2) Escanea &quot;Factory Default&quot; para restablecer configuración</li>
+                  <li className="ml-4">3) Escanea &quot;Disable All Symbologies&quot;</li>
+                  <li className="ml-4">4) Escanea &quot;Enable Code 128&quot;</li>
+                  <li className="ml-4">5) Escanea &quot;Set All Symbology Options: Do Not Transmit&quot;</li>
+                  <li className="ml-4">6) Escanea &quot;Data Suffix 1: Enter (Carriage Return)&quot;</li>
+                  <li className="ml-4">7) Escanea &quot;Exit Programming Mode&quot;</li>
+                </ol>
+                
+                <h4 className="font-medium text-blue-800 mt-4 mb-2">Uso del verificador</h4>
+                <ol className="list-decimal list-inside text-sm text-blue-800 space-y-2">
+                  <li>Conecta el escáner Symbol LI2208 a un puerto USB del equipo</li>
+                  <li>Mantén esta página activa en pantalla y en foco</li>
+                  <li>Apunta el escáner directamente al código de barras del boleto</li>
+                  <li>Si el código no es reconocido, puedes intentar la verificación manual</li>
+                  <li>Usa el botón &quot;Probar lector&quot; para confirmar que el escáner funciona correctamente</li>
                 </ol>
               </div>
             </div>

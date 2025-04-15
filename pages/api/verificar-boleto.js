@@ -10,7 +10,7 @@ export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({ 
       success: false, 
-      message: 'Método no permitido'
+      message: 'Método no permitido' 
     });
   }
 
@@ -25,62 +25,151 @@ export default async function handler(req, res) {
       });
     }
 
-    console.log(`Verificando boleto con código: ${codigo}`);
+    console.log(`Verificando boleto con código original: ${codigo}`);
     
-    // Buscar la reservación por reference_code
-    let { data: reservacionData, error: reservacionError } = await supabase
-      .from('reservaciones')
-      .select(`
-        id,
-        fecha_viaje,
-        estado,
-        reference_code,
-        created_at,
-        boleto_validado,
-        fecha_validacion,
-        horarios:horario_id (
-          id,
-          hora_salida,
-          precio,
-          rutas:ruta_id (
-            id,
-            origen,
-            destino,
-            distancia,
-            duracion_estimada
-          ),
-          buses:bus_id (
-            id,
-            numero,
-            tipo
-          )
-        ),
-        detalles_reservacion (
-          id,
-          asientos:asiento_id (
-            id,
-            numero,
-            tipo
-          )
-        )
-      `)
-      .eq('reference_code', codigo)
-      .maybeSingle();
+    // Normalizar el código para manejar los caracteres especiales del escáner Symbol LI2208
+    // Eliminar apóstrofes, comillas y otros caracteres no deseados
+    const codigoNormalizado = codigo.replace(/['"`\s]/g, '');
+    
+    // Si el código normalizado incluye 'BC' y existe un guión, podría ser un código de barras.
+    // Manejamos formatos como "BC'RES''M9HWKBXE" -> "BCRESM9HWKBXE"
+    let codigoLimpio = codigoNormalizado;
+    if (codigoNormalizado.includes('BC') && codigoNormalizado.includes('RES')) {
+      // Eliminar guiones adicionales que podrían haberse introducido
+      codigoLimpio = codigoNormalizado.replace(/-/g, '');
+    }
+    
+    console.log(`Código normalizado para búsqueda: ${codigoLimpio}`);
+    
+    // Intentar todas las variantes posibles del código
+    const variantesCodigo = [
+      codigo,                                // Código original tal como viene
+      codigoNormalizado,                     // Código sin apóstrofes ni espacios
+      codigoLimpio,                          // Código totalmente limpio
+      `BC-${codigoLimpio.split('BC')[1]}`,   // Reconstruir formato BC-XXXX
+      codigoLimpio.replace('BCRES', 'BC-RES--') // Reconstruir formato original
+    ];
+    
+    // Buscar la reservación con cualquiera de las variantes
+    let reservacionData = null;
+    let fueCodigoDeBarras = false;
 
-    if (reservacionError) {
-      console.error('Error al buscar reservación:', reservacionError);
-      return res.status(500).json({ 
-        success: false, 
-        message: 'Error al verificar el boleto'
-      });
+    // 1. Primero buscar por reference_code (código QR)
+    for (const varianteCodigo of variantesCodigo) {
+      if (reservacionData) break;
+      
+      const { data, error } = await supabase
+        .from('reservaciones')
+        .select(`
+          id,
+          fecha_viaje,
+          estado,
+          reference_code,
+          created_at,
+          boleto_validado,
+          fecha_validacion,
+          horarios:horario_id (
+            id,
+            hora_salida,
+            precio,
+            rutas:ruta_id (
+              id,
+              origen,
+              destino,
+              distancia,
+              duracion_estimada
+            ),
+            buses:bus_id (
+              id,
+              numero,
+              tipo
+            )
+          ),
+          detalles_reservacion (
+            id,
+            asientos:asiento_id (
+              id,
+              numero,
+              tipo
+            )
+          )
+        `)
+        .eq('reference_code', varianteCodigo)
+        .maybeSingle();
+
+      if (!error && data) {
+        console.log(`Encontrado por reference_code: ${varianteCodigo}`);
+        reservacionData = data;
+      }
     }
 
-    // Verificar si se encontró la reservación
+    // 2. Si no se encontró por reference_code, buscar por código de barras
     if (!reservacionData) {
-      console.log(`No se encontró boleto con código: ${codigo}`);
+      for (const varianteCodigo of variantesCodigo) {
+        if (reservacionData) break;
+        
+        console.log(`Buscando por código de barras: ${varianteCodigo}`);
+        
+        const { data, error } = await supabase
+          .from('codigos_barras_boletos')
+          .select(`
+            id,
+            codigo_barras,
+            reservacion_id,
+            reservaciones:reservacion_id (
+              id,
+              fecha_viaje,
+              estado,
+              reference_code,
+              created_at,
+              boleto_validado,
+              fecha_validacion,
+              horarios:horario_id (
+                id,
+                hora_salida,
+                precio,
+                rutas:ruta_id (
+                  id,
+                  origen,
+                  destino,
+                  distancia,
+                  duracion_estimada
+                ),
+                buses:bus_id (
+                  id,
+                  numero,
+                  tipo
+                )
+              ),
+              detalles_reservacion (
+                id,
+                asientos:asiento_id (
+                  id,
+                  numero,
+                  tipo
+                )
+              )
+            )
+          `)
+          .or(`codigo_barras.eq.${varianteCodigo},codigo_barras.ilike.%${varianteCodigo.replace(/^BC/i, '')}%`)
+          .maybeSingle();
+          
+        if (!error && data && data.reservaciones) {
+          console.log(`Encontrado por código de barras: ${varianteCodigo}`);
+          reservacionData = data.reservaciones;
+          fueCodigoDeBarras = true;
+        }
+      }
+    }
+
+    // 3. Si todavía no se encontró, intentar una búsqueda parcial en el código de barras
+    if (!reservacionData && codigoLimpio.length > 5) {
+      // Tomar la parte significativa del código y buscar coincidencias parciales
+      const parteClave = codigoLimpio.substring(2); // Eliminar 'BC' si existe
       
-      // Intentar buscar por código de barras si está configurado
-      const { data: reservacionBarcode, error: barcodeError } = await supabase
+      console.log(`Intentando búsqueda parcial con: ${parteClave}`);
+      
+      const { data, error } = await supabase
         .from('codigos_barras_boletos')
         .select(`
           id,
@@ -121,18 +210,22 @@ export default async function handler(req, res) {
             )
           )
         `)
-        .eq('codigo_barras', codigo)
-        .maybeSingle();
+        .ilike('codigo_barras', `%${parteClave}%`);
         
-      if (barcodeError || !reservacionBarcode || !reservacionBarcode.reservaciones) {
-        return res.status(404).json({ 
-          success: false, 
-          message: 'Boleto no encontrado'
-        });
+      if (!error && data && data.length > 0 && data[0].reservaciones) {
+        console.log(`Encontrado por búsqueda parcial: ${data[0].codigo_barras}`);
+        reservacionData = data[0].reservaciones;
+        fueCodigoDeBarras = true;
       }
-      
-      // Usar la reservación encontrada por código de barras
-      reservacionData = reservacionBarcode.reservaciones;
+    }
+
+    // Verificar si se encontró la reservación
+    if (!reservacionData) {
+      console.log(`No se encontró boleto con ninguna variante del código: ${codigo}`);
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Boleto no encontrado'
+      });
     }
     
     // Verificar el estado de la reservación
@@ -233,7 +326,7 @@ export default async function handler(req, res) {
         .insert({
           reservacion_id: reservacionData.id,
           fecha_validacion: ahora,
-          tipo_codigo: codigo === reservacionData.reference_code ? 'QR' : 'BARCODE',
+          tipo_codigo: fueCodigoDeBarras ? 'BARCODE' : 'QR',
           codigo: codigo
         });
     } catch (logError) {
